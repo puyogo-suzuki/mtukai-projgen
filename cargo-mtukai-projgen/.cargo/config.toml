@@ -1,0 +1,2 @@
+[alias]
+runx = "run -- --manifest-path ../examples/list_sum/Cargo.toml"
