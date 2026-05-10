@@ -50,21 +50,32 @@ fn main() -> Result<()> {
     }).unwrap_or(PathBuf::from("./")); // Current Project
     let destination = source.join(GEN_DIR);
 
+    let cargo_toml = cargo_toml::CargoToml::new(source.join("Cargo.toml"))?;
+
+    if std::env::args().any(|arg| arg == "--cargo-toml") {
+        println!("Main Cargo.toml:\n{}", cargo_toml.generate_main_file()?);
+        println!("LP Cargo.toml:\n{}", cargo_toml.generate_lp_file()?);
+        return Ok(());
+    }
+
     // For main
     clone_project(&source, &destination.join("main"))?;
+    let main_cargo_toml = cargo_toml.generate_main_file()?.to_string();
+    fs::write(&destination.join("main").join("Cargo.toml"), main_cargo_toml)?;
 
     // For LP Core
     clone_project(&source, &destination.join("lp"))?;
-
+    let lp_cargo_toml = cargo_toml.generate_lp_file()?.to_string();
+    fs::write(&destination.join("lp").join("Cargo.toml"), lp_cargo_toml)?;
 
     println!("Full project clone completed.");
     Ok(())
 }
 
 fn clone_project(src: &Path, dst: &Path) -> Result<()> {
-    if dst.exists() {
-        fs::remove_dir_all(dst)?;
-    }
+    // if dst.exists() {
+    //     fs::remove_dir_all(dst)?;
+    // }
 
     let blacklist = [src.join(GEN_DIR), src.join("Cargo.toml"), src.join("Cargo.lock")];
 

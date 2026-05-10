@@ -14,7 +14,7 @@ esp-backtrace = { version="0.19.0", features = [
     "println",
 ], optional = true }
 esp-bootloader-esp-idf = { version = "0.5.0", optional = true }
-esp-hal                = { version = "=1.1.0-rc.0", features = ["unstable", "log-04"], optional = true }
+esp-hal                = { version = "=1.1.1", features = ["unstable", "log-04"], optional = true }
 
 esp-rs-copro           = { path = "../../mtukai/esp-rs-copro" }
 esp-rs-copro-procmacro = { path = "../../mtukai/esp-rs-copro-procmacro" }
@@ -28,6 +28,7 @@ critical-section = {version ="1.2.0", optional = true }
 esp-alloc = { version = "0.10.0", optional = true }
 
 [features]
+default = [ "esp32c6" ]
 esp32c6 = [ "esp-backtrace?/esp32c6", "esp-bootloader-esp-idf?/esp32c6", "esp-hal?/esp32c6", "esp-lp-hal?/esp32c6", "esp-rs-copro/esp32c6", "esp-alloc?/esp32c6", "esp-rs-copro-procmacro/esp32c6" ]
 esp32s3 = [ "esp-backtrace?/esp32s3", "esp-bootloader-esp-idf?/esp32s3", "esp-hal?/esp32s3", "esp-lp-hal?/esp32s3", "esp-rs-copro/esp32s3", "esp-alloc?/esp32s3", "esp-rs-copro-procmacro/esp32s3" ]
 has-lp-core = [ "esp-rs-copro/has-lp-core", "esp-rs-copro-procmacro/has-lp-core", "dep:esp-println", "dep:esp-backtrace", "dep:esp-bootloader-esp-idf", "dep:esp-hal", "dep:critical-section", "dep:esp-alloc" ]
