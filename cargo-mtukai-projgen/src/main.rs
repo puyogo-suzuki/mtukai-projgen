@@ -94,8 +94,23 @@ fn clone_project(src: &Path, dst: &Path, additional_blacklist: &[PathBuf]) -> Re
                 fs::create_dir_all(parent)?;
             }
 
-            fs::copy(path, &target_path)
-                .with_context(|| format!("Failed to copy {:?}", path))?;
+            // Compare modification times - only copy if source is newer than target
+            let should_copy = if target_path.exists() {
+                let target_metadata = fs::metadata(&target_path)?;
+                let source_metadata = fs::metadata(path)?;
+                
+                let target_modified = target_metadata.modified()?;
+                let source_modified = source_metadata.modified()?;
+                
+                source_modified > target_modified
+            } else {
+                true
+            };
+
+            if should_copy {
+                fs::copy(path, &target_path)
+                    .with_context(|| format!("Failed to copy {:?}", path))?;
+            }
         }
     }
 
