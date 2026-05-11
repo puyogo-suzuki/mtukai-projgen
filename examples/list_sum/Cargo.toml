@@ -34,6 +34,9 @@ esp32s3 = [ "esp-backtrace?/esp32s3", "esp-bootloader-esp-idf?/esp32s3", "esp-ha
 has-lp-core = [ "esp-rs-copro/has-lp-core", "esp-rs-copro-procmacro/has-lp-core", "dep:esp-println", "dep:esp-backtrace", "dep:esp-bootloader-esp-idf", "dep:esp-hal", "dep:critical-section", "dep:esp-alloc" ]
 is-lp-core = [ "esp-rs-copro/is-lp-core", "esp-rs-copro-procmacro/is-lp-core", "dep:embedded-hal", "dep:esp-lp-hal" ]
 
+[build-dependencies]
+esp-metadata-generated = { version = "0.3.0", features = ["build-script"] }
+
 [profile.dev]
 # Rust debug is too slow.
 # For debug builds always builds with some optimization

@@ -7,15 +7,21 @@
     holding buffers for the duration of a data transfer."
 )]
 
-use esp_alloc as _;
-use esp_hal::rtc_cntl::Rtc;
+#![cfg(feature = "has-lp-core")]
+use {
+    esp_alloc as _,
+    esp_hal::rtc_cntl::Rtc,
+    esp_hal::lp_core::{LpCore, LpCoreWakeupSource},
+    esp_rs_copro::{lpbox::LPBox, prelude::*},
+    esp_rs_copro_procmacro::{define_lp_allocator, load_lp_code2},
+    core::option::Option,
 
-use esp_hal::lp_core::{LpCore, LpCoreWakeupSource};
-use esp_rs_copro::{lpbox::LPBox, prelude::*};
-use esp_rs_copro_procmacro::{define_lp_allocator, load_lp_code2};
-use core::option::Option;
-
-use esp_println::{print, println};
+    esp_println::{print, println}
+};
+#![cfg(feature = "is-lp-core")]
+use {
+    esp_lp_hal::{prelude::entry, delay::Delay}
+};
 
 #[cfg(feature = "has-lp-core")]
 #[panic_handler]

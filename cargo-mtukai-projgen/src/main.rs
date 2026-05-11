@@ -59,20 +59,18 @@ fn main() -> Result<()> {
     }
 
     // For main
-    clone_project(&source, &destination.join("main"))?;
+    clone_project(&source, &destination.join("main"), &[])?;
     let main_cargo_toml = cargo_toml.generate_main_file()?.to_string();
     fs::write(&destination.join("main").join("Cargo.toml"), main_cargo_toml)?;
 
     // For LP Core
-    clone_project(&source, &destination.join("lp"))?;
-    let lp_cargo_toml = cargo_toml.generate_lp_file()?.to_string();
-    fs::write(&destination.join("lp").join("Cargo.toml"), lp_cargo_toml)?;
+    gen_lp_project(&source, &destination, &cargo_toml)?;
 
     println!("Full project clone completed.");
     Ok(())
 }
 
-fn clone_project(src: &Path, dst: &Path) -> Result<()> {
+fn clone_project(src: &Path, dst: &Path, additional_blacklist: &[PathBuf]) -> Result<()> {
     // if dst.exists() {
     //     fs::remove_dir_all(dst)?;
     // }
@@ -81,7 +79,7 @@ fn clone_project(src: &Path, dst: &Path) -> Result<()> {
 
     for entry in WalkDir::new(src)
         .into_iter()
-        .filter_entry(|e| !is_ignored(e.path(), src, dst, &blacklist))
+        .filter_entry(|e| !is_ignored(e.path(), src, dst, &blacklist, &additional_blacklist))
     {
         let entry = entry?;
         let path = entry.path();
@@ -104,12 +102,13 @@ fn clone_project(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-fn is_ignored(path: &Path, src: &Path, dst: &Path, blacklist: &[PathBuf]) -> bool {
+fn is_ignored(path: &Path, src: &Path, dst: &Path, blacklist: &[PathBuf], additional_blacklist: &[PathBuf]) -> bool {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
     if name == "target"
         || name.starts_with(".")
-        || blacklist.iter().any(|p| path.starts_with(p)) {
+        || blacklist.iter().any(|p| path.starts_with(p))
+        || additional_blacklist.iter().any(|p| path.starts_with(p)) {
         return true;
     }
 
@@ -118,4 +117,26 @@ fn is_ignored(path: &Path, src: &Path, dst: &Path, blacklist: &[PathBuf]) -> boo
     }
 
     false
+}
+
+fn gen_lp_project(source: &Path, destination: &Path, cargo_toml: &cargo_toml::CargoToml) -> Result<()> {
+    let destination = &destination.join("lp");
+    // Clone the project
+    clone_project(&source, &destination, &[source.join("build.rs")])?;
+
+    // Generate Cargo.toml
+    let lp_cargo_toml = cargo_toml.generate_lp_file()?.to_string();
+    fs::write(&destination.join("Cargo.toml"), lp_cargo_toml)?;
+
+    // Generate build.toml and the linker script.
+    let build_rs = include_str!("lp_build_rs.txt");
+    fs::write(&destination.join("build.rs"), build_rs)?;
+    if let Ok(false) = fs::exists(&destination.join("ld")) {
+        fs::create_dir(&destination.join("ld"))?;
+    }
+    let link_lp_x = include_str!("lp_ld_link_lp_x.txt");
+    fs::write(&destination.join("ld").join("link-lp.x"), link_lp_x)?;
+    let link_ulp_x = include_str!("lp_ld_link_ulp_x.txt");
+    fs::write(&destination.join("ld").join("link-ulp.x"), link_ulp_x)?;
+    Ok(())
 }

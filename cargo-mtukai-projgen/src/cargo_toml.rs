@@ -32,6 +32,9 @@ impl CargoToml {
     pub fn generate_lp_file(&self) -> Result<DocumentMut> {
         // Implementation for generating LP file
         let mut lptoml = self.doc.clone();
+        //
+        // Prepare features.
+        //
         if let Some(default_features) = lptoml["features"].get_mut("default")
             && let Some(ary) = default_features.as_array_mut() {
             ary.push("is-lp-core");
@@ -40,11 +43,18 @@ impl CargoToml {
             ary.push("is-lp-core");
             lptoml["features"]["default"] = toml_edit::Item::from(ary);
         }
+        //
+        // Prepare dependencies.
+        //
         // For dependencies that refer to the relative path,
         lptoml["dependencies"].as_table_mut().map(|deps| {
             Self::translate_dependencies_path(deps);
         });
+        //
+        // Remove the 'bin' section
+        //
         lptoml.remove("bin");
+
         Ok(lptoml)
     }
 
