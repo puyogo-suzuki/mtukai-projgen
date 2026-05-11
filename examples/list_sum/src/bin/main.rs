@@ -7,21 +7,26 @@
     holding buffers for the duration of a data transfer."
 )]
 
-#![cfg(feature = "has-lp-core")]
+
+#[cfg(feature = "has-lp-core")]
 use {
     esp_alloc as _,
     esp_hal::rtc_cntl::Rtc,
     esp_hal::lp_core::{LpCore, LpCoreWakeupSource},
-    esp_rs_copro::{lpbox::LPBox, prelude::*},
     esp_rs_copro_procmacro::{define_lp_allocator, load_lp_code2},
-    core::option::Option,
-
     esp_println::{print, println}
 };
-#![cfg(feature = "is-lp-core")]
+
+use esp_rs_copro::{lpbox::LPBox, prelude::*};
+use core::option::Option;
+
+#[cfg(feature = "is-lp-core")]
 use {
-    esp_lp_hal::{prelude::entry, delay::Delay}
+    esp_lp_hal::{prelude::entry, delay::Delay},
+    esp_rs_copro::prelude::*,
+    panic_halt as _
 };
+
 
 #[cfg(feature = "has-lp-core")]
 #[panic_handler]
@@ -80,7 +85,7 @@ pub struct MainLPParcel{
 
 #[cfg(feature = "is-lp-core")]
 #[entry]
-fn on_lp() {
+fn main() -> !{
     let v: &mut MainLPParcel = get_transfer::<MainLPParcel>().unwrap();
     v.result = v.data.sum();
     v.data.push(10000);

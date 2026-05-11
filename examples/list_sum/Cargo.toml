@@ -32,7 +32,7 @@ default = [ "esp32c6" ]
 esp32c6 = [ "esp-backtrace?/esp32c6", "esp-bootloader-esp-idf?/esp32c6", "esp-hal?/esp32c6", "esp-lp-hal?/esp32c6", "esp-rs-copro/esp32c6", "esp-alloc?/esp32c6", "esp-rs-copro-procmacro/esp32c6" ]
 esp32s3 = [ "esp-backtrace?/esp32s3", "esp-bootloader-esp-idf?/esp32s3", "esp-hal?/esp32s3", "esp-lp-hal?/esp32s3", "esp-rs-copro/esp32s3", "esp-alloc?/esp32s3", "esp-rs-copro-procmacro/esp32s3" ]
 has-lp-core = [ "esp-rs-copro/has-lp-core", "esp-rs-copro-procmacro/has-lp-core", "dep:esp-println", "dep:esp-backtrace", "dep:esp-bootloader-esp-idf", "dep:esp-hal", "dep:critical-section", "dep:esp-alloc" ]
-is-lp-core = [ "esp-rs-copro/is-lp-core", "esp-rs-copro-procmacro/is-lp-core", "dep:embedded-hal", "dep:esp-lp-hal" ]
+is-lp-core = [ "esp-rs-copro/is-lp-core", "esp-rs-copro-procmacro/is-lp-core", "dep:embedded-hal", "dep:esp-lp-hal", "dep:panic-halt" ]
 
 [build-dependencies]
 esp-metadata-generated = { version = "0.3.0", features = ["build-script"] }
