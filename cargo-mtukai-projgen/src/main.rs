@@ -102,7 +102,13 @@ fn clone_project(src: &Path, dst: &Path, additional_blacklist: &[PathBuf]) -> Re
                 let target_modified = target_metadata.modified()?;
                 let source_modified = source_metadata.modified()?;
                 
-                source_modified > target_modified
+                let res = source_modified > target_modified;
+                if res {
+                    let mut perm = target_metadata.permissions();
+                    perm.set_readonly(false);
+                    fs::set_permissions(&target_path, perm)?;
+                }
+                res
             } else {
                 true
             };
@@ -110,6 +116,10 @@ fn clone_project(src: &Path, dst: &Path, additional_blacklist: &[PathBuf]) -> Re
             if should_copy {
                 fs::copy(path, &target_path)
                     .with_context(|| format!("Failed to copy {:?}", path))?;
+
+                let mut perms = fs::metadata(&target_path)?.permissions();
+                perms.set_readonly(true);
+                fs::set_permissions(&target_path, perms)?;
             }
         }
     }
