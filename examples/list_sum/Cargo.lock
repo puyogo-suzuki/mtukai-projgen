@@ -468,9 +468,9 @@ dependencies = [
 
 [[package]]
 name = "esp-hal"
-version = "1.1.0-rc.0"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3599174af043c640b89d5950558bc40bd448f6e1d56ae43880a0d8530b4f82c"
+checksum = "2bfcf2a0842903717f4663f6a08512c32b0f6b2d7fb7db3c8a6895d2e6d49f72"
 dependencies = [
  "bitfield",
  "bitflags",
@@ -575,6 +575,12 @@ name = "esp-metadata-generated"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b18b1787dd3adea642fb529dd83fe558a08ace365bbaede4643a8959992900f4"
+
+[[package]]
+name = "esp-metadata-generated"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a93e39c8ad8d390d248dc7b9f4b59a873f313bf535218b8e2351356972399e3"
 
 [[package]]
 name = "esp-metadata-generated"
@@ -946,9 +952,11 @@ dependencies = [
  "esp-bootloader-esp-idf",
  "esp-hal",
  "esp-lp-hal",
+ "esp-metadata-generated 0.3.0",
  "esp-println",
  "esp-rs-copro",
  "esp-rs-copro-procmacro",
+ "mtukai-projgen-procmacro",
  "panic-halt",
 ]
 
@@ -969,6 +977,20 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
+
+[[package]]
+name = "mtukai-projgen-procmacro"
+version = "0.1.0"
+dependencies = [
+ "document-features",
+ "object",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+ "termcolor",
+ "toml_edit",
+]
 
 [[package]]
 name = "nb"
@@ -1330,6 +1352,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 
@@ -1341,6 +1364,12 @@ checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
 dependencies = [
  "winnow",
 ]
+
+[[package]]
+name = "toml_writer"
+version = "1.1.1+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "typenum"

@@ -15,6 +15,10 @@ use proc_macro::TokenStream;
 use quote::quote;
 
 /// Marks the entry function of a LP core program.
+///
+/// Arguments:
+/// - `heap_size`: the LP heap size in bytes.
+/// - `define_alloc_error`: optional boolean, defaults to `true`.
 #[cfg(feature = "is-lp-core")]
 #[proc_macro_attribute]
 pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
@@ -22,24 +26,60 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     use proc_macro_crate::FoundCrate;
     #[cfg(not(test))]
     use proc_macro_crate::crate_name;
-    use proc_macro2::{Ident, Span};
-    use quote::format_ident;
+    use proc_macro2::{Ident, Literal, Span};
     use syn::{
         FnArg,
         GenericArgument,
+        LitBool,
+        LitInt,
         ItemFn,
         PatType,
         PathArguments,
+        Token,
         Type,
         parse::Error,
-        spanned::Spanned,
-        Pat, PatIdent
+        parse::Parse,
+        parse::ParseStream,
     };
 
-    if !args.is_empty() {
-        return Error::new(Span::call_site(), "This attribute accepts no arguments")
-            .to_compile_error().into();
+    struct EntryArgs {
+        heap_size: usize,
+        define_alloc_error: bool,
     }
+
+    impl Parse for EntryArgs {
+        fn parse(input: ParseStream) -> syn::Result<Self> {
+            if input.is_empty() {
+                return Ok(Self { heap_size: 4096, define_alloc_error: true });
+            }
+            let heap_size_lit: LitInt = input.parse()?;
+            let heap_size = heap_size_lit.base10_parse::<usize>()?;
+
+            let define_alloc_error = if input.is_empty() {
+                true
+            } else {
+                input.parse::<Token![,]>()?;
+                if input.is_empty() {
+                    return Err(Error::new(heap_size_lit.span(), "expected a boolean after the comma"));
+                }
+                let value: LitBool = input.parse()?;
+                value.value
+            };
+
+            if !input.is_empty() {
+                return Err(Error::new(heap_size_lit.span(), "unexpected extra arguments"));
+            }
+
+            Ok(Self { heap_size, define_alloc_error })
+        }
+    }
+
+    let entry_args: EntryArgs = match syn::parse(args) {
+        Ok(args) => args,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    let heap_size = entry_args.heap_size;
+    let define_alloc_error = entry_args.define_alloc_error;
 
     // This is a specialized implementation - won't fit other use-cases
     fn to_string(ty: &Type) -> String {
@@ -83,11 +123,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         res
     }
 
-    #[cfg(not(test))]
     let found_crate = crate_name("esp-lp-hal").expect("esp-lp-hal is present in `Cargo.toml`");
-    #[cfg(test)]
-    let found_crate = FoundCrate::Itself;
-
     let hal_crate = match found_crate {
         FoundCrate::Itself => quote!(esp_lp_hal),
         FoundCrate::Name(name) => {
@@ -95,7 +131,26 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             quote!( #ident )
         }
     };
+    let found_crate = crate_name("esp-rs-copro-procmacro").expect("esp-rs-copro-procmacro is present in `Cargo.toml`");
+    let procmacro_crate = match found_crate {
+        FoundCrate::Itself => quote!(esp_rs_copro_procmacro),
+        FoundCrate::Name(name) => {
+            let ident = Ident::new(&name, Span::call_site());
+            quote!( #ident )
+        }
+    };
 
+    let alloc_error_handler = if define_alloc_error {
+        quote! {
+            #[allow(unused)]
+            #[alloc_error_handler]
+            fn ignore_alloc_error(_: core::alloc::Layout) -> ! {
+                loop {}
+            }
+        }
+    } else {
+        quote! {}
+    };
 
     let input = match syn::parse2::<ItemFn>(item.into()) {
         Ok(f) => f,
@@ -138,6 +193,8 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     let orig_name = input.sig.ident.clone();
     let magic_symbol_name = make_magic_symbol_name(&args);
     quote! {
+        #procmacro_crate::esp_rs_copro_statics!(#heap_size);
+        #alloc_error_handler
         #[allow(non_snake_case)]
         #[unsafe(export_name = "main")]
         pub fn __risc_v_rt__main() {
@@ -160,7 +217,6 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn load_lp_code3(input: TokenStream) -> TokenStream {
     use std::path::Path;
-
     use parse::Error;
     use proc_macro::Span;
     use proc_macro2::TokenStream as TokenStream2;

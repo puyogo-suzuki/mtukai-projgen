@@ -28,21 +28,6 @@ use {
     panic_halt as _
 };
 
-
-#[cfg(feature = "has-lp-core")]
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
-
-#[cfg(feature = "is-lp-core")]
-esp_rs_copro_procmacro::esp_rs_copro_statics!(4096);
-#[cfg(feature = "is-lp-core")]
-#[alloc_error_handler]
-fn ignore_alloc_error(_: core::alloc::Layout) -> ! {
-    loop{}
-}
-
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 #[cfg(feature = "has-lp-core")]
@@ -84,7 +69,7 @@ pub struct MainLPParcel{
     pub result : i32
 }
 
-#[mtukai_projgen_procmacro::entry]
+#[mtukai_projgen_procmacro::entry(4096)]
 fn main(v : &mut MainLPParcel) -> ! {
     v.result = v.data.sum();
     v.data.push(10000);
