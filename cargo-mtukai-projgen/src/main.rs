@@ -58,12 +58,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // For main
-    clone_project(&source, &destination.join("main"), &[])?;
-    let main_cargo_toml = cargo_toml.generate_main_file()?.to_string();
-    fs::write(&destination.join("main").join("Cargo.toml"), main_cargo_toml)?;
-
-    // For LP Core
+    gen_main_project(&source, &destination, &cargo_toml)?;
     gen_lp_project(&source, &destination, &cargo_toml)?;
 
     println!("Full project clone completed.");
@@ -142,6 +137,17 @@ fn is_ignored(path: &Path, src: &Path, dst: &Path, blacklist: &[PathBuf], additi
     }
 
     false
+}
+
+fn gen_main_project(source: &Path, destination: &Path, cargo_toml: &cargo_toml::CargoToml) -> Result<()> {
+    let destination = &destination.join("main");
+    // Clone the project
+    clone_project(&source, &destination, &[])?;
+
+    // Generate Cargo.toml
+    let main_cargo_toml = cargo_toml.generate_main_file()?.to_string();
+    fs::write(&destination.join("Cargo.toml"), main_cargo_toml)?;
+    Ok(())
 }
 
 fn gen_lp_project(source: &Path, destination: &Path, cargo_toml: &cargo_toml::CargoToml) -> Result<()> {

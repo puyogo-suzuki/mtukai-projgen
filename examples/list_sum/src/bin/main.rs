@@ -13,7 +13,8 @@ use {
     esp_alloc as _,
     esp_hal::rtc_cntl::Rtc,
     esp_hal::lp_core::{LpCore, LpCoreWakeupSource},
-    esp_rs_copro_procmacro::{define_lp_allocator, load_lp_code2},
+    esp_rs_copro_procmacro::{define_lp_allocator},
+    mtukai_projgen_procmacro::load_lp_code3,
     esp_println::{print, println}
 };
 
@@ -135,9 +136,7 @@ fn main() -> ! {
     println!("lp core stopped");
 
     // load code to LP core
-    let lp_core_code = load_lp_code2!(
-        "CANNOT BE COMPILED"
-    );
+    let lp_core_code = load_lp_code3!();
     {
         let (list, expected_sum) = gen_list();
         print_list(&list);
