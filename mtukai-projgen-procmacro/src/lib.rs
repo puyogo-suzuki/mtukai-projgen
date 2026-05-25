@@ -11,10 +11,152 @@
 //! ## For shared project
 //! - `MovableObject` derive macro. This macro can be used to automatically implement the `MovableObject` trait for a struct or enum, which defines how to move the value to and from the LP memory.
 
-#[allow(unused)]
 use proc_macro::TokenStream;
 use quote::quote;
 
+/// Marks the entry function of a LP core program.
+#[cfg(feature = "is-lp-core")]
+#[proc_macro_attribute]
+pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
+    use proc_macro2::Span as Span2;
+    use proc_macro_crate::FoundCrate;
+    #[cfg(not(test))]
+    use proc_macro_crate::crate_name;
+    use proc_macro2::{Ident, Span};
+    use quote::format_ident;
+    use syn::{
+        FnArg,
+        GenericArgument,
+        ItemFn,
+        PatType,
+        PathArguments,
+        Type,
+        parse::Error,
+        spanned::Spanned,
+        Pat, PatIdent
+    };
+
+    if !args.is_empty() {
+        return Error::new(Span::call_site(), "This attribute accepts no arguments")
+            .to_compile_error().into();
+    }
+
+    // This is a specialized implementation - won't fit other use-cases
+    fn to_string(ty: &Type) -> String {
+        let mut res = String::new();
+        if let Type::Path(p) = ty {
+            let segment = p.path.segments.last().unwrap();
+            res.push_str(&segment.ident.to_string());
+
+            if let PathArguments::AngleBracketed(g) = &segment.arguments {
+                res.push('<');
+                let mut pushed = false;
+                for arg in &g.args {
+                    if pushed {
+                        res.push(',');
+                    }
+                    pushed = true;
+                    match arg {
+                        GenericArgument::Type(t) => {
+                            res.push_str(&to_string(t));
+                        },
+                        GenericArgument::Const(c) => {
+                            res.push_str(&quote! { #c }.to_string());
+                        },
+                        _ => pushed = false,
+                    }
+                }
+                res.push('>');
+            }
+        }
+        res
+    }
+
+    pub(crate) fn make_magic_symbol_name(args: &Vec<&PatType>) -> String {
+        let mut res = String::from("__ULP_MAGIC_");
+        for &a in args {
+            let t = &a.ty;
+            let quoted = to_string(t);
+            res.push_str(&quoted);
+            res.push('$');
+        }
+        res
+    }
+
+    #[cfg(not(test))]
+    let found_crate = crate_name("esp-lp-hal").expect("esp-lp-hal is present in `Cargo.toml`");
+    #[cfg(test)]
+    let found_crate = FoundCrate::Itself;
+
+    let hal_crate = match found_crate {
+        FoundCrate::Itself => quote!(esp_lp_hal),
+        FoundCrate::Name(name) => {
+            let ident = Ident::new(&name, Span::call_site());
+            quote!( #ident )
+        }
+    };
+
+
+    let input = match syn::parse2::<ItemFn>(item.into()) {
+        Ok(f) => f,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    if input.sig.asyncness.is_some() {
+        return syn::Error::new(Span2::call_site(), "async functions are not supported by #[entry]")
+            .to_compile_error()
+            .into();
+    }
+
+    let mut arg_exprs = Vec::new();
+    let mut args = Vec::new();
+    for input in &input.sig.inputs {
+        match input {
+            FnArg::Typed(pt) => {
+                let ty = match pt.ty.as_ref() {
+                    Type::Reference(r) if r.mutability.is_some() => r.elem.as_ref(),
+                    _ => {
+                        return syn::Error::new_spanned(
+                            &pt.ty,
+                            "#[entry] requires every argument to be of the form `&mut T`",
+                        )
+                        .to_compile_error()
+                        .into();
+                    }
+                };
+                arg_exprs.push(quote! { get_transfer::<#ty>().unwrap() });
+                args.push(pt);
+            }
+            FnArg::Receiver(_) => { // self is not supported currently.
+                return syn::Error::new(Span2::call_site(), "methods with self are not supported by #[entry]")
+                    .to_compile_error()
+                    .into();
+            }
+        }
+    }
+
+    let orig_name = input.sig.ident.clone();
+    let magic_symbol_name = make_magic_symbol_name(&args);
+    quote! {
+        #[allow(non_snake_case)]
+        #[unsafe(export_name = "main")]
+        pub fn __risc_v_rt__main() {
+            #[unsafe(export_name = #magic_symbol_name)]
+            static ULP_MAGIC: [u32; 0] = [0u32; 0];
+            unsafe { ULP_MAGIC.as_ptr().read_volatile(); }
+            #orig_name(#(#arg_exprs),*);
+        }
+        #input
+    }.into()
+}
+
+#[cfg(feature="has-lp-core")]
+#[proc_macro_attribute]
+pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
+    return quote!{}.into();
+}
+
+#[cfg(feature="has-lp-core")]
 #[proc_macro]
 pub fn load_lp_code3(input: TokenStream) -> TokenStream {
     use std::path::Path;

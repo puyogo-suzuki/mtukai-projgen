@@ -65,7 +65,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn clone_project(src: &Path, dst: &Path, additional_blacklist: &[PathBuf]) -> Result<()> {
+fn clone_project(src: &Path, dst: &Path,  is_ignored : fn(&Path, &Path, &Path, &[PathBuf],) -> bool) -> Result<()> {
     // if dst.exists() {
     //     fs::remove_dir_all(dst)?;
     // }
@@ -74,7 +74,7 @@ fn clone_project(src: &Path, dst: &Path, additional_blacklist: &[PathBuf]) -> Re
 
     for entry in WalkDir::new(src)
         .into_iter()
-        .filter_entry(|e| !is_ignored(e.path(), src, dst, &blacklist, &additional_blacklist))
+        .filter_entry(|e| !(is_ignored(e.path(), src, dst, &blacklist) || e.path() == dst))
     {
         let entry = entry?;
         let path = entry.path();
@@ -122,27 +122,24 @@ fn clone_project(src: &Path, dst: &Path, additional_blacklist: &[PathBuf]) -> Re
     Ok(())
 }
 
-fn is_ignored(path: &Path, src: &Path, dst: &Path, blacklist: &[PathBuf], additional_blacklist: &[PathBuf]) -> bool {
+fn is_ignored_main(path: &Path, src: &Path, dst: &Path, blacklist: &[PathBuf]) -> bool {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
+    if path.starts_with(src.join(".cargo")) {
+        return false;
+    }
     if name == "target"
         || name.starts_with(".")
-        || blacklist.iter().any(|p| path.starts_with(p))
-        || additional_blacklist.iter().any(|p| path.starts_with(p)) {
+        || blacklist.iter().any(|p| path.starts_with(p)) {
         return true;
     }
-
-    if path == dst {
-        return true;
-    }
-
     false
 }
 
 fn gen_main_project(source: &Path, destination: &Path, cargo_toml: &cargo_toml::CargoToml) -> Result<()> {
     let destination = &destination.join("main");
     // Clone the project
-    clone_project(&source, &destination, &[])?;
+    clone_project(&source, &destination, is_ignored_main)?;
 
     // Generate Cargo.toml
     let main_cargo_toml = cargo_toml.generate_main_file()?.to_string();
@@ -150,10 +147,22 @@ fn gen_main_project(source: &Path, destination: &Path, cargo_toml: &cargo_toml::
     Ok(())
 }
 
+fn is_ignored_lp(path: &Path, src: &Path, dst: &Path, blacklist: &[PathBuf]) -> bool {
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+
+    if name == "target"
+        || name.starts_with(".")
+        || blacklist.iter().any(|p| path.starts_with(p))
+        || path.starts_with(src.join("build.rs")) {
+        return true;
+    }
+    false
+}
+
 fn gen_lp_project(source: &Path, destination: &Path, cargo_toml: &cargo_toml::CargoToml) -> Result<()> {
     let destination = &destination.join("lp");
     // Clone the project
-    clone_project(&source, &destination, &[source.join("build.rs")])?;
+    clone_project(&source, &destination, is_ignored_lp)?;
 
     // Generate Cargo.toml
     let lp_cargo_toml = cargo_toml.generate_lp_file()?.to_string();

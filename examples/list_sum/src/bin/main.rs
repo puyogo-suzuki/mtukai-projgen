@@ -84,10 +84,8 @@ pub struct MainLPParcel{
     pub result : i32
 }
 
-#[cfg(feature = "is-lp-core")]
-#[entry]
-fn main() -> !{
-    let v: &mut MainLPParcel = get_transfer::<MainLPParcel>().unwrap();
+#[mtukai_projgen_procmacro::entry]
+fn main(v : &mut MainLPParcel) -> ! {
     v.result = v.data.sum();
     v.data.push(10000);
     Delay.delay_millis(1000);
