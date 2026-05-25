@@ -14,6 +14,20 @@
 use proc_macro::TokenStream;
 use quote::quote;
 
+fn get_crate_name(name : &str) -> proc_macro2::TokenStream {
+    use proc_macro_crate::crate_name;
+    use proc_macro_crate::FoundCrate;
+    use proc_macro2::{Ident, Span};
+    let found_crate = crate_name(name).expect(&format!("{} is present in `Cargo.toml`", name));
+    match found_crate {
+        FoundCrate::Itself => quote!(esp_lp_hal),
+        FoundCrate::Name(name) => {
+            let ident = Ident::new(&name, Span::call_site());
+            quote!( #ident )
+        }
+    }
+}
+
 /// Marks the entry function of a LP core program.
 ///
 /// Arguments:
@@ -23,9 +37,6 @@ use quote::quote;
 #[proc_macro_attribute]
 pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     use proc_macro2::Span as Span2;
-    use proc_macro_crate::FoundCrate;
-    #[cfg(not(test))]
-    use proc_macro_crate::crate_name;
     use proc_macro2::{Ident, Literal, Span};
     use syn::{
         FnArg,
@@ -123,22 +134,8 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         res
     }
 
-    let found_crate = crate_name("esp-lp-hal").expect("esp-lp-hal is present in `Cargo.toml`");
-    let hal_crate = match found_crate {
-        FoundCrate::Itself => quote!(esp_lp_hal),
-        FoundCrate::Name(name) => {
-            let ident = Ident::new(&name, Span::call_site());
-            quote!( #ident )
-        }
-    };
-    let found_crate = crate_name("esp-rs-copro-procmacro").expect("esp-rs-copro-procmacro is present in `Cargo.toml`");
-    let procmacro_crate = match found_crate {
-        FoundCrate::Itself => quote!(esp_rs_copro_procmacro),
-        FoundCrate::Name(name) => {
-            let ident = Ident::new(&name, Span::call_site());
-            quote!( #ident )
-        }
-    };
+    let hal_create = get_crate_name("esp-lp-hal");
+    let procmacro_crate = get_crate_name("esp-rs-copro-procmacro");
 
     let alloc_error_handler = if define_alloc_error {
         quote! {
