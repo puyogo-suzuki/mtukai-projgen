@@ -16,7 +16,7 @@ impl CargoToml {
     }
 
     fn translate_dependencies_path(dep_table : &mut toml_edit::Table) {
-        for (key, value) in dep_table.iter_mut() {
+        for (_, value) in dep_table.iter_mut() {
             if let Some(v_tbl) = value.as_inline_table_mut()
                 && let Some(path_item) = v_tbl.get_mut("path")
                 && let Some(path_str) = path_item.as_str()
