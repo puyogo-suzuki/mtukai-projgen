@@ -28,7 +28,6 @@ fn get_crate_name(name : &str) -> proc_macro2::TokenStream {
     }
 }
 
-
 /// EntryMacroArgs := HeapSize | HeapSize "," remaining | remaining
 /// remaining := item | item "," remaining
 /// item :=  [(key_str "=" String)|(key_int "=" Integer)] 
@@ -37,11 +36,11 @@ fn get_crate_name(name : &str) -> proc_macro2::TokenStream {
 struct EntryMacroArgs {
     heap_size: u32,
     define_alloc_error: bool,
-    #[cfg(feature = "has-lp-core")]
+    // #[cfg(feature = "has-lp-core")]
     path : String,
-    #[cfg(feature = "has-lp-core")]
+    // #[cfg(feature = "has-lp-core")]
     lp_start : Option<u32>,
-    #[cfg(feature = "has-lp-core")]
+    // #[cfg(feature = "has-lp-core")]
     lp_length : Option<u32>
 }
 
@@ -274,17 +273,14 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let procmacro_crate = get_crate_name("esp-rs-copro-procmacro");
     let self_crate = get_crate_name("mtukai-projgen");
-    let alloc_error_handler = if define_alloc_error {
+    let alloc_error_handler =  define_alloc_error.then(|| {
         quote! {
             #[allow(unused)]
             #[alloc_error_handler]
             fn ignore_alloc_error(_: core::alloc::Layout) -> ! {
                 loop {}
             }
-        }
-    } else {
-        quote! {}
-    };
+        }});
 
     let input = match syn::parse2::<ItemFn>(item.into()) {
         Ok(f) => f,
@@ -293,22 +289,19 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
 
     if input.sig.asyncness.is_some() {
         return syn::Error::new(Span2::call_site(), "async functions are not supported by #[entry]")
-            .to_compile_error()
-            .into();
+            .to_compile_error().into();
     }
 
     let mut arg_exprs = Vec::new();
     let mut args = Vec::new();
     if input.sig.inputs.len() != 1 && input.sig.inputs.len() != 2 { // TODO: support more arguments.
         return syn::Error::new(Span2::call_site(), "#[entry] requires a function with exactly one or two arguments")
-            .to_compile_error()
-            .into();
+            .to_compile_error().into();
     }
 
     fn gen_error() -> TokenStream {
         syn::Error::new(Span2::call_site(), "#[entry] requires a function with the first argument of type `&mut LpContext`")
-            .to_compile_error()
-            .into()
+            .to_compile_error().into()
     }
     // Check the first argument is LpContext.
     if let FnArg::Typed(pt) = &input.sig.inputs[0] {
@@ -372,7 +365,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     }.into()
 }
 
-#[cfg(feature="has-lp-core")]
+// #[cfg(feature="has-lp-core")]
 #[proc_macro_attribute]
 pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     use std::path::Path;
@@ -400,8 +393,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     let elf_file = args.path;
     if !Path::new(&elf_file).exists() {
         return Error::new(Span::call_site().into(), "File not found")
-            .to_compile_error()
-            .into();
+            .to_compile_error().into();
     }
 
     let bin_data = fs::read(elf_file).unwrap();
@@ -414,8 +406,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
                 SectionFlags::Elf{sh_flags: sh} => (sh & u64::from(object::elf::SHF_ALLOC)) != 0 ,
                 _ => false
             }
-        })
-        .collect();
+        }).collect();
     sections.sort_by(|a, b| a.address().partial_cmp(&b.address()).unwrap());
 
     let mut binary: Vec<u8> = Vec::new();
@@ -431,8 +422,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         return Error::new(
             Span::call_site().into(),
             "Given file doesn't seem to have any allocatable sections.",
-        )
-        .to_compile_error().into();
+        ).to_compile_error().into();
     } else if  sections[0].address() < last_address {
         return Error::new(
             Span::call_site().into(),
@@ -441,8 +431,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
                 last_address,
                 sections[0].address()
             ),
-        )
-        .to_compile_error().into();
+        ).to_compile_error().into();
     }
 
     for section in sections {
@@ -460,25 +449,18 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             return Error::new(
                 lp_length.span(),
                 "LP_CODE length exceeds lp_length.",
-            )
-            .to_compile_error()
-            .into();
+            ).to_compile_error().into();
         }
     }
 
-    let magic_symbol = obj_file
-        .symbols()
-        .find(|s| s.name().unwrap().starts_with("__ULP_MAGIC_"));
-
-    let magic_symbol = if let Some(magic_symbol) = magic_symbol {
+    let magic_symbol = if let Some(magic_symbol) = 
+        obj_file.symbols().find(|s| s.name().unwrap().starts_with("__ULP_MAGIC_")) {
         magic_symbol.name().unwrap()
     } else {
         return Error::new(
             Span::call_site().into(),
             "Given file doesn't seem to be an LP/ULP core application.",
-        )
-        .to_compile_error()
-        .into();
+        ).to_compile_error().into();
     };
 
     // magic symbol is not cared, currently.
@@ -548,9 +530,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             return Error::new(
                 input_fn.sig.span(),
                 "Function must have at least one argument of type `&mut LpContext`",
-            )
-            .to_compile_error()
-            .into();
+            ).to_compile_error().into();
         }
     };
     let second_arg = if let Some(arg) = new_sig.inputs.get_mut(1) {
@@ -591,7 +571,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             quote!{unsafe { transfer_to_main(((#a) as *mut *mut u8).read_volatile(), #mtukai_transfer_value)? } })
         } else { (quote! {}, quote! {})};
     let allocsym = obj_file.symbols().find(|s| s.name().map_or(false, |v| v.starts_with("__COPRO_ALLOCATOR_")));
-    let allocfun = if let Some(a) = allocsym {
+    let allocfun = allocsym.map(|a| {
         let mut addr = a.address() as u32;
         let size = a.name().ok().and_then(|v| v["__COPRO_ALLOCATOR_".len()..].parse::<usize>().ok());
         if cfg!(feature = "esp32s3") {
@@ -602,11 +582,11 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
                 #addr as *mut ImplLPAllocator<#size>
             }
         }
-    } else {quote!{}};
-    let alloccall = if !allocfun.is_empty() {quote!{
+    });
+    let alloccall = allocfun.is_some().then(|| quote!{
         unsafe{get_allocator().as_mut().unwrap().init()};
         #transfer
-    }} else {quote!{}};
+    });
 
     let copy_dest = if let Some(lp_start) = args.lp_start {
         quote! { (#lp_start as *mut u8) }
@@ -631,6 +611,5 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             copro_unlock();
             Ok(())
         }
-    }
-    .into()
+    }.into()
 }
