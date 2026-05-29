@@ -203,6 +203,45 @@ impl syn::parse::Parse for EntryMacroArgs {
     }
 }
 
+/// Returns if the given function signature is not suitable for the entry macro.
+fn check_entry_fn_signature(item : &syn::ItemFn) -> Option<syn::Error> {
+    use proc_macro2::Span as Span2;
+    use syn::{FnArg, Type};
+    fn gen_err(msg: &str) -> Option<syn::Error> {
+        Some(syn::Error::new(Span2::call_site(), msg))
+    }
+    // Check asyncness.
+    if item.sig.asyncness.is_some() {
+        return gen_err("async functions are not supported by #[entry]");
+    }
+    // Check arguments count.
+    if item.sig.inputs.len() == 0 {
+        return gen_err("Functions marked with #[entry] must have at least one argument: `&mut LpContext`. If you want to transfer any object, please add more arguments with the form `&mut T`.");
+    }
+    if item.sig.inputs.len() > 2{
+        return gen_err("Currently, only up to two arguments are supported for functions marked with #[entry]. The first argument must be `&mut LpContext`, and the second argument with a type of the form `&mut T`.");
+    }
+
+    // Check the first argument is `&mut LpContext`.
+    if let FnArg::Typed(pt) = &item.sig.inputs[0] // The first argument is typed.
+    && let Type::Reference(r) = pt.ty.as_ref() // The first argument is a reference.
+    && r.mutability.is_some() // and mutable.
+    //check the name of ty is `LpContext`.
+    && let Type::Path(p) =  r.elem.as_ref()
+    && let Some(segment) =  p.path.segments.last()
+    && segment.ident == "LpContext" {
+    } else { return gen_err("First argument must be of type `&mut LpContext`"); }
+
+    if item.sig.inputs.len() > 1 {
+        // Check the second argument is `&mut T`.
+        if let FnArg::Typed(pt) = &item.sig.inputs[1] // The second argument is typed.
+        && let Type::Reference(r) = pt.ty.as_ref() // The second argument is a reference.
+        && r.mutability.is_some() { // and mutable.
+        } else { return gen_err("Currently, second argument must be of type `&mut T`"); }
+    }
+    None
+}
+
 /// Marks the entry function of a LP core program.
 ///
 /// Arguments:
@@ -287,42 +326,13 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    if input.sig.asyncness.is_some() {
-        return syn::Error::new(Span2::call_site(), "async functions are not supported by #[entry]")
-            .to_compile_error().into();
+    if let Some(err) = check_entry_fn_signature(&input) {
+        return err.to_compile_error().into();
     }
 
     let mut arg_exprs = Vec::new();
     let mut args = Vec::new();
-    if input.sig.inputs.len() != 1 && input.sig.inputs.len() != 2 { // TODO: support more arguments.
-        return syn::Error::new(Span2::call_site(), "#[entry] requires a function with exactly one or two arguments")
-            .to_compile_error().into();
-    }
 
-    fn gen_error() -> TokenStream {
-        syn::Error::new(Span2::call_site(), "#[entry] requires a function with the first argument of type `&mut LpContext`")
-            .to_compile_error().into()
-    }
-    // Check the first argument is LpContext.
-    if let FnArg::Typed(pt) = &input.sig.inputs[0] {
-        match pt.ty.as_ref() {
-            Type::Reference(r) if r.mutability.is_some() => {
-                let ty = r.elem.as_ref();
-                //check the name of ty is `LpContext`.
-                match ty {
-                    Type::Path(p) => {
-                        if let Some(segment) =  p.path.segments.last()
-                            && segment.ident == "LpContext" {
-                        } else {
-                            return gen_error();
-                        }
-                    },
-                    _ => { println!("{:?}", ty); return gen_error(); }
-                }
-            },
-            _ => { return gen_error(); }
-        }
-    } else { return gen_error(); }
     for input in input.sig.inputs.iter().skip(1) {
         match input {
             FnArg::Typed(pt) => {
@@ -489,6 +499,11 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         Ok(f) => f,
         Err(e) => return e.to_compile_error().into(),
     };
+
+    if let Some(e) = check_entry_fn_signature(&input_fn) {
+        return e.to_compile_error().into();
+    }
+
     fn rewrite_binding(
         arg: &mut syn::FnArg,
         fallback_name: &str,
