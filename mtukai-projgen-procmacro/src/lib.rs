@@ -115,24 +115,26 @@ impl syn::parse::Parse for EntryMacroArgs {
         let mut lp_length: Option<u32> = None;
         let mut arch : Option<String> = None;
 
-        fn warn_duplicate(key: &str) {
-            eprintln!("warning: duplicate `{}` in #[entry] arguments; using the last value", key);
+        fn warn_duplicate<T>(val : &Option<T>, key: &str) {
+            if val.is_some() {
+                eprintln!("warning: duplicate `{}` in #[entry] arguments; using the last value", key);
+            }
         }
         
         let mut first_item = true;
         while !input.is_empty() {
-            if !first_item {
+            if first_item {
+                if input.peek(LitInt) {
+                    let lit: LitInt = input.parse()?;
+                    heap_size = Some(lit.base10_parse()?);
+                    continue;
+                }
+                first_item = false;
+            } else {
                 input.parse::<Token![,]>()?;
                 if input.is_empty() {
                     break;
                 }
-            }
-            first_item = false;
-
-            if heap_size.is_none() && input.peek(LitInt) {
-                let lit: LitInt = input.parse()?;
-                heap_size = Some(lit.base10_parse()?);
-                continue;
             }
 
             let key: syn::Ident = input.parse()?;
@@ -141,44 +143,32 @@ impl syn::parse::Parse for EntryMacroArgs {
             match key.to_string().as_str() {
                 "heap_size" => {
                     let lit: LitInt = input.parse()?;
-                    if heap_size.is_some() {
-                        warn_duplicate("heap_size");
-                    }
+                    warn_duplicate(&heap_size, "heap_size");
                     heap_size = Some(lit.base10_parse()?);
                 }
                 "define_alloc_error" => {
                     let lit: LitBool = input.parse()?;
-                    if define_alloc_error.is_some() {
-                        warn_duplicate("define_alloc_error");
-                    }
+                    warn_duplicate(&define_alloc_error, "define_alloc_error");
                     define_alloc_error = Some(lit.value);
                 }
                 "path" => {
                     let lit: LitStr = input.parse()?;
-                    if path.is_some() {
-                        warn_duplicate("path");
-                    }
+                    warn_duplicate(&path, "path");
                     path = Some(lit.value());
                 }
                 "lp_start" => {
                     let lit: LitInt = input.parse()?;
-                    if lp_start.is_some() {
-                        warn_duplicate("lp_start");
-                    }
+                    warn_duplicate(&lp_start, "lp_start");
                     lp_start = Some(lit.base10_parse()?);
                 }
                 "lp_length" => {
                     let lit: LitInt = input.parse()?;
-                    if lp_length.is_some() {
-                        warn_duplicate("lp_length");
-                    }
+                    warn_duplicate(&lp_length, "lp_length");
                     lp_length = Some(lit.base10_parse()?);
                 }
                 "arch" => {
                     let lit: LitStr = input.parse()?;
-                    if arch.is_some() {
-                        warn_duplicate("arch");
-                    }
+                    warn_duplicate(&arch, "arch");
                     arch = Some(lit.value());
                 }
                 _ => {
