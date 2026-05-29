@@ -1,0 +1,27 @@
+[package]
+name = "mtukai-projgen"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+
+[lib]
+
+[package.metadata.docs.rs]
+features = ["is-lp-core", "has-lp-core", "esp32c6"]
+
+[dependencies]
+esp-lp-hal  = { version = "0.3.0", features = [], optional = true}
+esp-hal     = { version = "=1.1.1", features = ["unstable", "log-04"], optional = true }
+
+[features]
+#! ### Low-power Core Feature Flags
+## Indicate that the SoC contains an LP core.
+has-lp-core = ["esp-hal"]
+## Provide an `#[entry]` macro for running applications on the LP/ULP core.
+is-lp-core = ["esp-lp-hal"]
+## This feature must be enabled when has-lp-core is enabled for ESP32-C6 project.
+esp32c6 = ["esp-lp-hal?/esp32c6", "esp-hal?/esp32c6"]
+## This feature must be enabled when has-lp-core is enabled for ESP32-S2 project.
+esp32s2 = []
+## This feature must be enabled when has-lp-core is enabled for ESP32-S3 project.
+esp32s3 = ["esp-lp-hal?/esp32s3", "esp-hal?/esp32s3"]

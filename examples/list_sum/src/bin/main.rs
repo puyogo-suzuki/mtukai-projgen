@@ -14,16 +14,16 @@ use {
     esp_hal::rtc_cntl::Rtc,
     esp_hal::lp_core::{LpCore, LpCoreWakeupSource},
     esp_rs_copro_procmacro::{define_lp_allocator},
-    mtukai_projgen_procmacro::load_lp_code3,
     esp_println::{print, println}
 };
 
 use esp_rs_copro::{lpbox::LPBox, prelude::*};
 use core::option::Option;
+use mtukai_projgen::LpContext;
 
 #[cfg(feature = "is-lp-core")]
 use {
-    esp_lp_hal::{prelude::entry, delay::Delay},
+    esp_lp_hal::delay::Delay,
     esp_rs_copro::prelude::*,
     panic_halt as _
 };
@@ -75,7 +75,7 @@ pub struct MainLPParcel{
 }
 
 #[mtukai_projgen_procmacro::entry(4096)]
-fn main(v : &mut MainLPParcel) -> ! {
+fn lpmain(_ : &mut LpContext, v : &mut MainLPParcel) -> ! {
     v.result = v.data.sum();
     v.data.push(10000);
     Delay.delay_millis(1000);
@@ -124,7 +124,6 @@ fn main() -> ! {
     println!("lp core stopped");
 
     // load code to LP core
-    let lp_core_code = load_lp_code3!();
     {
         let (list, expected_sum) = gen_list();
         print_list(&list);
@@ -134,9 +133,14 @@ fn main() -> ! {
         };
         println!("lpcore run");
         delay.delay_millis(1000); // FOR ESP32-S3 because the UART stuck after the HP core wake up without the delay.
-        if let Err(e) = lp_core_code.run_light_sleep(&mut lp_core, LpCoreWakeupSource::HpCpu, &mut Rtc::new(peripherals.LPWR), &mut parcel) {
-            println!("Error running LP core: {}", e);
+        {
+            let mut rtc = Rtc::new(peripherals.LPWR);
+            let mut lp_context = LpContext::new(&mut lp_core, &mut rtc);
+            if let Err(e) = lpmain(&mut lp_context, &mut parcel) {
+                println!("Error running LP core: {}", e);
+            }
         }
+        
         println!("result: {} (expected: {})", parcel.result, expected_sum);
         print_list(&parcel.data);
         println!("result: {} (expected: {})", parcel.data.sum(), expected_sum + 10000)
