@@ -36,11 +36,11 @@ fn get_crate_name(name : &str) -> proc_macro2::TokenStream {
 struct EntryMacroArgs {
     heap_size: u32,
     define_alloc_error: bool,
-    // #[cfg(feature = "has-lp-core")]
+    #[cfg(feature = "has-lp-core")]
     path : String,
-    // #[cfg(feature = "has-lp-core")]
+    #[cfg(feature = "has-lp-core")]
     lp_start : Option<u32>,
-    // #[cfg(feature = "has-lp-core")]
+    #[cfg(feature = "has-lp-core")]
     lp_length : Option<u32>
 }
 
@@ -365,7 +365,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     }.into()
 }
 
-// #[cfg(feature="has-lp-core")]
+#[cfg(feature="has-lp-core")]
 #[proc_macro_attribute]
 pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     use std::path::Path;
