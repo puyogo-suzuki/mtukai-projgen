@@ -474,7 +474,7 @@ fn generate_parcel_struct(flat_fields : &Vec<FlatField>, implement_impls : bool)
             }
             Type::Path(_) => {
                 move_to_lp_stmts.extend(quote! {#field_src.wrap_move_to_lp(#field_dst)?;});
-                // move_to_main_stmts.extend(quote! {#field_src.wrap_move_to_main(#field_dst)?;});
+                move_to_main_stmts.extend(quote! {#field_src.wrap_move_to_main(#field_dst)?;});
             }
             _ => {
                 return Err(syn::Error::new_spanned(ty, "Currently unsupported argument type."));
