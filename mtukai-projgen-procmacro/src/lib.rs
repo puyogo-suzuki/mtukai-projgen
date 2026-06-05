@@ -218,10 +218,6 @@ fn check_entry_fn_signature(item : &syn::ItemFn) -> Option<syn::Error> {
     if item.sig.inputs.len() == 0 {
         return gen_err("Functions marked with #[entry] must have at least one argument: `&mut LpContext`. If you want to transfer any object, please add more arguments with the form `&mut T`.");
     }
-    if item.sig.inputs.len() > 2{
-        return gen_err("Currently, only up to two arguments are supported for functions marked with #[entry]. The first argument must be `&mut LpContext`, and the second argument with a type of the form `&mut T`.");
-    }
-
     // Check the first argument is `&mut LpContext`.
     if let FnArg::Typed(pt) = &item.sig.inputs[0] // The first argument is typed.
     && let Type::Reference(r) = pt.ty.as_ref() // The first argument is a reference.
@@ -232,14 +228,303 @@ fn check_entry_fn_signature(item : &syn::ItemFn) -> Option<syn::Error> {
     && segment.ident == "LpContext" {
     } else { return gen_err("First argument must be of type `&mut LpContext`"); }
 
-    if item.sig.inputs.len() > 1 {
-        // Check the second argument is `&mut T`.
-        if let FnArg::Typed(pt) = &item.sig.inputs[1] // The second argument is typed.
-        && let Type::Reference(r) = pt.ty.as_ref() // The second argument is a reference.
-        && r.mutability.is_some() { // and mutable.
-        } else { return gen_err("Currently, second argument must be of type `&mut T`"); }
+    for arg in item.sig.inputs.iter().skip(1) {
+        // Check the argument is `&mut T`.
+        if let FnArg::Typed(pt) = arg // The argument is typed.
+        && let Type::Reference(_) = pt.ty.as_ref() { // The argument is a reference.
+        } else { return gen_err("Currently, the arguments must be of type `&mut T`"); }
     }
     None
+}
+
+struct FlatField {
+    name: syn::Ident,
+    ty: syn::Type,
+}
+
+fn collect_flat_fields(inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>) -> syn::Result<Vec<FlatField>> {
+    use syn::{spanned::Spanned, Pat, Type, FnArg, PatType};
+    fn collect_flat_fields(
+        pat: &syn::Pat,
+        ty: &syn::Type,
+        fields: &mut Vec<FlatField>,
+    ) -> syn::Result<()> {
+        fn gen_wildcard_error (pat: &syn::Pat) -> syn::Result<()> {
+            Err(syn::Error::new_spanned( pat, "wildcard is unsupported." ))
+        }
+        match (pat, ty) {
+            (Pat::Ident(pat_ident), ty) => {
+                if pat_ident.ident == "_" {
+                    return gen_wildcard_error(pat);
+                }
+                fields.push(FlatField {
+                    name: pat_ident.ident.clone(),
+                    ty: ty.clone(),
+                });
+                Ok(())
+            }
+            (Pat::Paren(pat_paren), ty) => collect_flat_fields(pat_paren.pat.as_ref(), ty, fields),
+            (Pat::Reference(pat_ref), Type::Reference(inner_ref)) => {
+                collect_flat_fields(pat_ref.pat.as_ref(), inner_ref.elem.as_ref(), fields)
+            }
+            (Pat::Reference(pat_ref), ty) => collect_flat_fields(pat_ref.pat.as_ref(), ty, fields),
+            (Pat::Tuple(pat_tuple), Type::Reference(inner_ref)) => {
+                match inner_ref.elem.as_ref() {
+                    Type::Tuple(inner_tuple) => {
+                        if pat_tuple.elems.len() != inner_tuple.elems.len() {
+                            return Err(syn::Error::new_spanned(
+                                pat,
+                                "tuple pattern and tuple type have different lengths",
+                            ));
+                        }
+                        for (sub_pat, sub_ty) in pat_tuple.elems.iter().zip(inner_tuple.elems.iter()) {
+                            collect_flat_fields(sub_pat, sub_ty, fields)?;
+                        }
+                        Ok(())
+                    }
+                    _ => Err(syn::Error::new_spanned(
+                        pat,
+                        "tuple pattern requires a tuple type",
+                    )),
+                }
+            }
+            (Pat::Tuple(pat_tuple), Type::Tuple(tuple_ty)) => {
+                if pat_tuple.elems.len() != tuple_ty.elems.len() {
+                    return Err(syn::Error::new_spanned(
+                        pat,
+                        "tuple pattern and tuple type have different lengths",
+                    ));
+                }
+                for (sub_pat, sub_ty) in pat_tuple.elems.iter().zip(tuple_ty.elems.iter()) {
+                    collect_flat_fields(sub_pat, sub_ty, fields)?;
+                }
+                Ok(())
+            }
+            // (Pat::Slice(pat_slice), Type::Array(array_ty)) => {
+            //     for sub_pat in pat_slice.elems.iter() {
+            //         collect_flat_fields(sub_pat, array_ty.elem.as_ref(), fields)?;
+            //     }
+            //     Ok(())
+            // }
+            (Pat::Wild(_), _) | (Pat::Rest(_), _) => gen_wildcard_error(pat),
+            (Pat::Or(pat_or), _) => Err(syn::Error::new(
+                pat_or.span(),
+                "or-patterns are not supported because they do not denote a single value",
+            )),
+            _ => Err(syn::Error::new_spanned(
+                pat,
+                "currently supported argument patterns are identifiers, tuples, references, and parentheses", // , and slices over tuple/array types",
+            )),
+        }
+    }
+    let mut flat_fields = Vec::new();
+    for arg in inputs.iter().skip(1) { // Skip the first argument: `&mut LpContext`.
+        match arg {
+            FnArg::Typed(PatType { pat, ty, .. }) => {
+                collect_flat_fields(
+                    pat.as_ref(),
+                    ty.as_ref(),
+                    &mut flat_fields,
+                )?;
+            }
+            FnArg::Receiver(_) => {
+                return Err(syn::Error::new_spanned(arg, "generate_parcel_struct does not support self receivers"));
+            }
+        };
+    }
+    Ok(flat_fields)
+}
+
+fn build_call_args(
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
+    flat_fields: &[FlatField],
+) -> syn::Result<Vec<proc_macro2::TokenStream>> {
+    use syn::{FnArg, Pat, PatType, Type};
+
+    fn build_arg_expr(
+        pat: &Pat,
+        ty: &Type,
+        flat_fields: &mut std::slice::Iter<'_, FlatField>,
+    ) -> syn::Result<proc_macro2::TokenStream> {
+        match pat {
+            Pat::Ident(pat_ident) => {
+                let field = flat_fields
+                    .next()
+                    .ok_or_else(|| syn::Error::new_spanned(pat_ident, "not enough flattened fields"))?;
+                let name = &field.name;
+                match ty {
+                    Type::Reference(r) if r.mutability.is_some() => {
+                        Ok(quote! { unsafe { &mut *transferred.#name } })
+                    }
+                    Type::Reference(_) => Ok(quote! { unsafe { &*transferred.#name } }),
+                    _ => Ok(quote! { transferred.#name }),
+                }
+            }
+            Pat::Paren(pat_paren) => build_arg_expr(pat_paren.pat.as_ref(), ty, flat_fields),
+            Pat::Reference(pat_ref) => {
+                let inner_ty = match ty {
+                    Type::Reference(inner_ty) => inner_ty.elem.as_ref(),
+                    _ => ty,
+                };
+                let inner_expr = build_arg_expr(pat_ref.pat.as_ref(), inner_ty, flat_fields)?;
+                match ty {
+                    Type::Reference(r) if r.mutability.is_some() => Ok(quote! { &mut #inner_expr }),
+                    Type::Reference(_) => Ok(quote! { &#inner_expr }),
+                    _ => Ok(inner_expr),
+                }
+            }
+            Pat::Tuple(pat_tuple) => {
+                let mut elems = Vec::with_capacity(pat_tuple.elems.len());
+                let tuple_ty = match ty {
+                    Type::Reference(inner_ty) => match inner_ty.elem.as_ref() {
+                        Type::Tuple(tuple_ty) => tuple_ty,
+                        _ => {
+                            return Err(syn::Error::new_spanned(
+                                pat,
+                                "tuple pattern requires a tuple type",
+                            ));
+                        }
+                    },
+                    Type::Tuple(tuple_ty) => tuple_ty,
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            pat,
+                            "tuple pattern requires a tuple type",
+                        ));
+                    }
+                };
+                if pat_tuple.elems.len() != tuple_ty.elems.len() {
+                    return Err(syn::Error::new_spanned(
+                        pat,
+                        "tuple pattern and tuple type have different lengths",
+                    ));
+                }
+                for (elem_pat, elem_ty) in pat_tuple.elems.iter().zip(tuple_ty.elems.iter()) {
+                    elems.push(build_arg_expr(elem_pat, elem_ty, flat_fields)?);
+                }
+                match ty {
+                    Type::Reference(r) if r.mutability.is_some() => Ok(quote! { &mut ( #(#elems),* ) }),
+                    Type::Reference(_) => Ok(quote! { &( #(#elems),* ) }),
+                    _ => Ok(quote! { ( #(#elems),* ) }),
+                }
+            }
+            // Pat::Slice(pat_slice) => {
+            //     let mut elems = Vec::with_capacity(pat_slice.elems.len());
+            //     for elem in pat_slice.elems.iter() {
+            //         elems.push(build_arg_expr(elem, flat_fields)?);
+            //     }
+            //     Ok(quote! { [ #(#elems),* ] })
+            // }
+            Pat::Wild(_) | Pat::Rest(_) => Err(syn::Error::new_spanned(
+                pat,
+                "wildcard and rest patterns are not supported in generated calls",
+            )),
+            Pat::Or(pat_or) => Err(syn::Error::new_spanned(
+                pat_or,
+                "or-patterns are not supported because they do not denote a single value",
+            )),
+            _ => Err(syn::Error::new_spanned(
+                pat,
+                "currently supported argument patterns are identifiers, tuples, references, and parentheses", // , and slices over tuple/array types",
+            )),
+        }
+    }
+
+    let mut flat_fields = flat_fields.iter();
+    let mut arg_exprs = Vec::new();
+
+    for arg in inputs.iter().skip(1) {
+        match arg {
+            FnArg::Typed(PatType { pat, ty, .. }) => {
+                arg_exprs.push(build_arg_expr(pat.as_ref(), ty.as_ref(), &mut flat_fields)?);
+            }
+            FnArg::Receiver(_) => {
+                return Err(syn::Error::new_spanned(arg, "generate_call_args does not support self receivers"));
+            }
+        }
+    }
+
+    if flat_fields.next().is_some() {
+        return Err(syn::Error::new_spanned(
+            &inputs,
+            "flattened fields and function arguments do not match",
+        ));
+    }
+
+    Ok(arg_exprs)
+}
+
+fn generate_parcel_struct(flat_fields : &Vec<FlatField>, implement_impls : bool) -> syn::Result<proc_macro2::TokenStream> {
+    use syn::Type;
+    fn push_move_stmts(
+        field_name: &syn::Ident,
+        ty: &Type,
+        move_to_main_stmts: &mut proc_macro2::TokenStream,
+        move_to_lp_stmts: &mut proc_macro2::TokenStream,
+    ) -> syn::Result<()> {
+        let field_src = quote! { self.#field_name };
+        let field_dst = quote! { (&mut (*dest).#field_name) as * mut _ as *mut u8 };
+        match ty {
+            Type::Reference(r) => {
+                let inner_ty = &r.elem;
+                move_to_lp_stmts.extend(quote! { (*dest).#field_name = (&*(#field_src)).wrap_transfer_to_lp()? as *mut #inner_ty; });
+                if r.mutability.is_some() {
+                    move_to_main_stmts.extend(quote! { (&mut *((*dest).#field_name)).wrap_transfer_to_main_sub(#field_src as * const _ as * const u8)?;});
+                }
+            }
+            Type::Path(_) => {
+                move_to_lp_stmts.extend(quote! {#field_src.wrap_move_to_lp(#field_dst)?;});
+                // move_to_main_stmts.extend(quote! {#field_src.wrap_move_to_main(#field_dst)?;});
+            }
+            _ => {
+                return Err(syn::Error::new_spanned(ty, "Currently unsupported argument type."));
+            }
+        }
+        Ok(())
+    }
+
+    let mut fields = proc_macro2::TokenStream::new();
+    let mut move_to_main_stmts = if implement_impls {
+        quote! {let dest = dest as * mut Self;}.into()
+    } else { proc_macro2::TokenStream::new() };
+    let mut move_to_lp_stmts = if implement_impls {
+        quote! {let dest = dest as * mut Self;}.into()
+    } else { proc_macro2::TokenStream::new() };
+    
+    for flat_field in flat_fields {
+        let FlatField { name, ty } = flat_field;
+        let translated_ty = match ty {
+            Type::Reference(syn::TypeReference{elem, ..}) => {
+                quote!{*mut #elem}
+            },
+            Type::Path(_) => {
+                quote!{#ty}
+            }
+            _ => return Err(syn::Error::new_spanned(ty, "Currently unsupported argument type.")),
+        };
+        fields.extend(quote! { #name: #translated_ty, });
+        if implement_impls {
+            push_move_stmts( &name, &ty, &mut move_to_main_stmts, &mut move_to_lp_stmts)?;
+        }
+    }
+
+    Ok(quote! {
+        struct MtukaiParcel {
+            #fields
+        }
+        impl MovableObject for MtukaiParcel {
+            unsafe fn move_to_main(&self, dest: *mut u8) -> Result<(), EspCoproError> { unsafe {
+                #move_to_main_stmts
+                Ok(())
+            }}
+
+            unsafe fn move_to_lp(&self, dest: *mut u8) -> Result<(), EspCoproError> { unsafe {
+                #move_to_lp_stmts
+                Ok(())
+            }}
+        }
+    }
+    .into())
 }
 
 /// Marks the entry function of a LP core program.
@@ -310,6 +595,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         res
     }
 
+    let mtukai_crate = get_crate_name("esp-rs-copro");
     let procmacro_crate = get_crate_name("esp-rs-copro-procmacro");
     let self_crate = get_crate_name("mtukai-projgen");
     let alloc_error_handler =  define_alloc_error.then(|| {
@@ -330,30 +616,26 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         return err.to_compile_error().into();
     }
 
-    let mut arg_exprs = Vec::new();
-    let mut args = Vec::new();
+    let flat_fields = match collect_flat_fields(&input.sig.inputs) {
+        Ok(fields) => fields,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    let parcel_struct = match generate_parcel_struct(&flat_fields, false) {
+        Ok(ts) => ts,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    let arg_exprs = match build_call_args(&input.sig.inputs, &flat_fields) {
+        Ok(exprs) => exprs,
+        Err(e) => return e.to_compile_error().into(),
+    };
 
+    let mut args = Vec::new();
     for input in input.sig.inputs.iter().skip(1) {
         match input {
-            FnArg::Typed(pt) => {
-                let ty = match pt.ty.as_ref() {
-                    Type::Reference(r) if r.mutability.is_some() => r.elem.as_ref(),
-                    _ => {
-                        return syn::Error::new_spanned(
-                            &pt.ty,
-                            "#[entry] requires every argument to be of the form `&mut T`",
-                        )
-                        .to_compile_error()
-                        .into();
-                    }
-                };
-                arg_exprs.push(quote! { get_transfer::<#ty>().unwrap() });
-                args.push(pt);
-            }
+            FnArg::Typed(pt) => { args.push(pt); }
             _ => {
                 return syn::Error::new(Span2::call_site(), "methods with self are not supported by #[entry]")
-                    .to_compile_error()
-                    .into();
+                    .to_compile_error().into();
             }
         }
     }
@@ -366,9 +648,12 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         #[allow(non_snake_case)]
         #[unsafe(export_name = "main")]
         pub fn __risc_v_rt__main() {
+            use #mtukai_crate::{EspCoproError, movableobject::MovableObject};
             #[unsafe(export_name = #magic_symbol_name)]
             static ULP_MAGIC: [u32; 0] = [0u32; 0];
             unsafe { ULP_MAGIC.as_ptr().read_volatile(); }
+            #parcel_struct
+            let transferred = get_transfer::<MtukaiParcel>().unwrap();
             #orig_name(&mut #self_crate::LpContext::new(), #(#arg_exprs),*);
         }
         #input
@@ -397,7 +682,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     
     let copro_crate_use = if let Ok(FoundCrate::Name(ref name)) = crate_name("esp-rs-copro") {
         let ident = Ident::new(name, Span::call_site().into());
-        quote!{ use #ident ::{ transfer_functions::*, lpbox::LPBox, lpalloc::ImplLPAllocator, movableobject::MovableObject, EspCoproError, try_copro_lock, copro_unlock}; }
+        quote!{ use #ident ::{ transfer_functions::*, lpbox::LPBox, lpalloc::ImplLPAllocator, movableobject::MovableObject, movableobjectwrapper::{MovableObjectWrap, MovableObjectWrapFallback}, EspCoproError, try_copro_lock, copro_unlock}; }
     } else { quote!{} };
 
     let elf_file = args.path;
@@ -509,24 +794,23 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         fallback_name: &str,
         err_msg: &str,
     ) -> syn::Result<syn::Ident> {
-        match arg {
-            syn::FnArg::Typed(pt) => {
-                match pt.pat.as_ref() {
-                    syn::Pat::Ident(pat_ident) => {
-                        if pat_ident.ident != "_" {
-                            return Ok(pat_ident.ident.clone());
+        if let syn::FnArg::Typed(pt) = arg {
+            match pt.pat.as_ref() {
+                syn::Pat::Ident(pat_ident) => {
+                    if pat_ident.ident != "_" {
+                        return Ok(pat_ident.ident.clone());
                         } // if "_", rewriting.
-                    }
-                    syn::Pat::Wild(_) => {}, // OK rewriting.
-                    _ => {
-                        return Err(Error::new(pt.pat.span(), err_msg));
-                    }
-                };
-                let ident = syn::Ident::new(fallback_name, proc_macro2::Span::call_site());
-                pt.pat = Box::new(parse_quote!(#ident));
-                Ok(ident)
-            }
-            _ => Err(Error::new(arg.span(), err_msg)),
+                    },
+                syn::Pat::Wild(_) => {}, // OK rewriting.
+                _ => {
+                    return Err(Error::new(pt.pat.span(), err_msg));
+                }
+            };
+            let ident = syn::Ident::new(fallback_name, proc_macro2::Span::call_site());
+            pt.pat = Box::new(parse_quote!(#ident));
+            Ok(ident)
+        } else {
+            Err(Error::new(arg.span(), err_msg))
         }
     }
 
@@ -548,22 +832,35 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             ).to_compile_error().into();
         }
     };
-    let second_arg = if let Some(arg) = new_sig.inputs.get_mut(1) {
-            match rewrite_binding(
-                arg,
-                "mtukai_transfer_value",
-                "The second argument of the function marked with #[entry] must be a binding pattern",
-            ) {
-                Ok(ident) => Some(ident),
-                Err(e) => return e.to_compile_error().into(),
-            }
-        } else {
-            None
-        };
+    let flat_fields = match collect_flat_fields(&new_sig.inputs) {
+        Ok(fields) => fields,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    let parcel_struct = match generate_parcel_struct(&flat_fields, true) {
+        Ok(ts) => ts,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
     let (transfer, transfer_back) =
         if let Some(a) = obj_file.symbols().find(|s| s.name() == Ok("__COPRO_TRANSFER")).map(|s| s.address()) 
-            && let Some(mtukai_transfer_value) = second_arg {
+            && new_sig.inputs.len() > 1 {
             let a = a as u32 + if cfg!(feature = "esp32s3") { 0x5000_0000 } else { 0 };
+            let mut new_args = proc_macro2::TokenStream::new();
+            let mut update_values = proc_macro2::TokenStream::new();
+            for ff in flat_fields {
+                let name = &ff.name;
+                match &ff.ty {
+                    syn::Type::Reference(syn::TypeReference{ elem, mutability, .. }) => {
+                        new_args.extend(quote! { #name: #name as *mut #elem, });
+                        if mutability.is_some() {
+                            update_values.extend(quote! { *#name = *transferred.#name; });
+                        }
+                    },
+                    _ => {
+                        new_args.extend(quote! { #name, });
+                    }
+                }
+            }
             (quote!{
                 unsafe {
                     use core::alloc::GlobalAlloc;
@@ -580,10 +877,11 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
                         }
                     };
                 }
-                let trans = transfer_to_lp(#mtukai_transfer_value)?;
+                let mut mtukai_transfer_value = MtukaiParcel {#new_args}; 
+                let trans = transfer_to_lp(& mtukai_transfer_value)?;
                 unsafe {((#a) as *mut *mut u8).write_volatile(trans);}
             },
-            quote!{unsafe { transfer_to_main(((#a) as *mut *mut u8).read_volatile(), #mtukai_transfer_value)? } })
+            quote!{unsafe { transfer_to_main(((#a) as *mut *mut u8).read_volatile(), &mut mtukai_transfer_value)?; } })
         } else { (quote! {}, quote! {})};
     let allocsym = obj_file.symbols().find(|s| s.name().map_or(false, |v| v.starts_with("__COPRO_ALLOCATOR_")));
     let allocfun = allocsym.map(|a| {
@@ -612,6 +910,8 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     quote! {
         #new_sig {
             #imports
+
+            #parcel_struct
 
             static LP_CODE: &[u8] = &[#(#binary),*];
             unsafe extern "C" { static #rtc_code_start: u32; }

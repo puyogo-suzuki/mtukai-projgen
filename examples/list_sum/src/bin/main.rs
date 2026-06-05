@@ -68,16 +68,10 @@ impl SimpleList {
     }
 }
 
-#[derive(esp_rs_copro_procmacro::MovableObject)]
-pub struct MainLPParcel{
-    pub data : LPBox<SimpleList>,
-    pub result : i32
-}
-
 #[mtukai_projgen_procmacro::entry(4096)]
-fn lpmain(_ : &mut LpContext, v : &mut MainLPParcel) -> ! {
-    v.result = v.data.sum();
-    v.data.push(10000);
+fn lpmain(_ : &mut LpContext, data : &mut LPBox<SimpleList>, result : &mut i32) -> ! {
+    *result = data.sum();
+    data.push(10000);
     Delay.delay_millis(1000);
     wake_hp_core();
     lp_core_halt()
@@ -127,23 +121,21 @@ fn main() -> ! {
     {
         let (list, expected_sum) = gen_list();
         print_list(&list);
-        let mut parcel = MainLPParcel {
-            data : LPBox::new(list),
-            result : 0
-        };
+        let mut data = LPBox::new(list);
+        let mut result = 0;
         println!("lpcore run");
         delay.delay_millis(1000); // FOR ESP32-S3 because the UART stuck after the HP core wake up without the delay.
         {
             let mut rtc = Rtc::new(peripherals.LPWR);
             let mut lp_context = LpContext::new(&mut lp_core, &mut rtc);
-            if let Err(e) = lpmain(&mut lp_context, &mut parcel) {
+            if let Err(e) = lpmain(&mut lp_context, &mut data, &mut result) {
                 println!("Error running LP core: {}", e);
             }
         }
         
-        println!("result: {} (expected: {})", parcel.result, expected_sum);
-        print_list(&parcel.data);
-        println!("result: {} (expected: {})", parcel.data.sum(), expected_sum + 10000)
+        println!("result: {} (expected: {})", result, expected_sum);
+        print_list(&data);
+        println!("result: {} (expected: {})", data.sum(), expected_sum + 10000)
     }
     loop {}
 }
