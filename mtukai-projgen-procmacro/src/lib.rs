@@ -114,10 +114,13 @@ impl syn::parse::Parse for EntryMacroArgs {
         let mut lp_length: Option<u32> = None;
         let mut arch : Option<String> = None;
 
-        fn warn_duplicate<T>(val : &Option<T>, key: &str) {
+        fn update_val<V, T : syn::parse::Parse>(input: &syn::parse::ParseStream, val: &mut Option<V>, key: &str, parser: fn(T) -> syn::Result<V>) -> syn::Result<()> {
+            let lit : T = input.parse()?;
             if val.is_some() {
                 eprintln!("warning: duplicate `{}` in #[entry] arguments; using the last value", key);
             }
+            *val = Some(parser(lit)?);
+            Ok(())
         }
         
         let mut first_item = true;
@@ -140,36 +143,12 @@ impl syn::parse::Parse for EntryMacroArgs {
             input.parse::<Token![=]>()?;
 
             match key.to_string().as_str() {
-                "heap_size" => {
-                    let lit: LitInt = input.parse()?;
-                    warn_duplicate(&heap_size, "heap_size");
-                    heap_size = Some(lit.base10_parse()?);
-                }
-                "define_alloc_error" => {
-                    let lit: LitBool = input.parse()?;
-                    warn_duplicate(&define_alloc_error, "define_alloc_error");
-                    define_alloc_error = Some(lit.value);
-                }
-                "path" => {
-                    let lit: LitStr = input.parse()?;
-                    warn_duplicate(&path, "path");
-                    path = Some(lit.value());
-                }
-                "lp_start" => {
-                    let lit: LitInt = input.parse()?;
-                    warn_duplicate(&lp_start, "lp_start");
-                    lp_start = Some(lit.base10_parse()?);
-                }
-                "lp_length" => {
-                    let lit: LitInt = input.parse()?;
-                    warn_duplicate(&lp_length, "lp_length");
-                    lp_length = Some(lit.base10_parse()?);
-                }
-                "arch" => {
-                    let lit: LitStr = input.parse()?;
-                    warn_duplicate(&arch, "arch");
-                    arch = Some(lit.value());
-                }
+                "heap_size" => update_val(&input, &mut heap_size, "heap_size", |lit: LitInt| lit.base10_parse())?,
+                "define_alloc_error" => update_val(&input, &mut define_alloc_error, "define_alloc_error", |lit: LitBool| Ok(lit.value))?,
+                "path" => update_val(&input, &mut path, "path", |lit: LitStr| Ok(lit.value()))?,
+                "lp_start" => update_val(&input, &mut lp_start, "lp_start", |lit: LitInt| lit.base10_parse())?,
+                "lp_length" => update_val(&input, &mut lp_length, "lp_length", |lit: LitInt| lit.base10_parse())?,
+                "arch" => update_val(&input, &mut arch, "arch", |lit: LitStr| Ok(lit.value()))?,
                 _ => {
                     return Err(syn::Error::new(
                         key.span(),
@@ -225,14 +204,14 @@ fn check_entry_fn_signature(item : &syn::ItemFn) -> Option<syn::Error> {
     //check the name of ty is `LpContext`.
     && let Type::Path(p) =  r.elem.as_ref()
     && let Some(segment) =  p.path.segments.last()
-    && segment.ident == "LpContext" {
-    } else { return gen_err("First argument must be of type `&mut LpContext`"); }
+    && segment.ident == "LpContext" {}
+    else { return gen_err("First argument must be of type `&mut LpContext`"); }
 
     for arg in item.sig.inputs.iter().skip(1) {
         // Check the argument is `&mut T`.
         if let FnArg::Typed(pt) = arg // The argument is typed.
-        && let Type::Reference(_) = pt.ty.as_ref() { // The argument is a reference.
-        } else { return gen_err("Currently, the arguments must be of type `&mut T`"); }
+        && let Type::Reference(_) = pt.ty.as_ref() { } // The argument is a reference.
+        else { return gen_err("Currently, the arguments must be of type `&mut T`"); }
     }
     None
 }
@@ -682,7 +661,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     
     let copro_crate_use = if let Ok(FoundCrate::Name(ref name)) = crate_name("esp-rs-copro") {
         let ident = Ident::new(name, Span::call_site().into());
-        quote!{ use #ident ::{ transfer_functions::*, lpbox::LPBox, lpalloc::ImplLPAllocator, movableobject::MovableObject, movableobjectwrapper::{MovableObjectWrap, MovableObjectWrapFallback}, EspCoproError, try_copro_lock, copro_unlock}; }
+        quote!{ use #ident ::{ transfer_functions::*, lpbox::LPBox, lpalloc::ImplLPAllocator, movableobject::MovableObject, movableobjectwrapper::*, EspCoproError, try_copro_lock, copro_unlock}; }
     } else { quote!{} };
 
     let elf_file = args.path;
