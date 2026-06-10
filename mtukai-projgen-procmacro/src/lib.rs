@@ -325,11 +325,11 @@ fn build_call_args(
                 match ty {
                     Type::Reference(r) =>
                         Ok(if r.mutability.is_some() {
-                            quote! { unsafe { &mut *transferred.#name } }
+                            quote! { unsafe { &mut *mtukai_transferred.#name } }
                         } else {
-                            quote! { unsafe { &*transferred.#name } }
+                            quote! { unsafe { &*mtukai_transferred.#name } }
                         }),
-                    _ => Ok(quote! { transferred.#name }),
+                    _ => Ok(quote! { mtukai_transferred.#name }),
                 }
             }
             Pat::Paren(pat_paren) => build_arg_expr(pat_paren.pat.as_ref(), ty, flat_fields),
@@ -619,8 +619,9 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             static ULP_MAGIC: [u32; 0] = [0u32; 0];
             unsafe { ULP_MAGIC.as_ptr().read_volatile(); }
             #parcel_struct
-            let transferred = get_transfer::<MtukaiParcel>().unwrap();
+            let mtukai_transferred = get_transfer::<MtukaiParcel>().unwrap();
             #orig_name(&mut #self_crate::LpContext::new(), #(#arg_exprs),*);
+            core::mem::forget(mtukai_transferred); // Do not free the transferred data, as it is now owned by the main processor.
         }
         #input
     }.into()
@@ -845,7 +846,10 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
                 let trans = transfer_to_lp(& mtukai_transfer_value)?;
                 unsafe {((#a) as *mut *mut u8).write_volatile(trans);}
             },
-            quote!{unsafe { transfer_to_main(((#a) as *mut *mut u8).read_volatile(), &mut mtukai_transfer_value)?; } })
+            quote!{unsafe {
+                transfer_to_main(((#a) as *mut *mut u8).read_volatile(), &mut mtukai_transfer_value)?;
+                core::mem::forget(mtukai_transfer_value);
+            } })
         } else { (quote! {}, quote! {})};
     let allocsym = obj_file.symbols().find(|s| s.name().map_or(false, |v| v.starts_with("__COPRO_ALLOCATOR_")));
     let allocfun = allocsym.map(|a| {

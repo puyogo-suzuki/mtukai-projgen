@@ -24,7 +24,6 @@ use mtukai_projgen::LpContext;
 #[cfg(feature = "is-lp-core")]
 use {
     esp_lp_hal::delay::Delay,
-    esp_rs_copro::prelude::*,
     panic_halt as _
 };
 
