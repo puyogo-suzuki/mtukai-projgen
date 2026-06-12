@@ -68,8 +68,8 @@ impl SimpleList {
 }
 
 #[mtukai_projgen_procmacro::entry(4096)]
-fn lpmain(_ : &mut LpContext, data : &mut LPBox<SimpleList>, result : &mut i32, to_add : i32) -> ! {
-    *result = data.sum();
+fn lpmain(_ : &mut LpContext, data : &mut LPBox<SimpleList>, to_add : i32, to_be_summed : &[i32], result : &mut i32) -> ! {
+    *result = to_be_summed.iter().sum();
     data.push(to_add);
     Delay.delay_millis(1000);
     wake_hp_core();
@@ -123,17 +123,18 @@ fn main() -> ! {
         const TO_ADD : i32 = 12345;
         let mut data = LPBox::new(list);
         let mut result = 0;
+        let to_be_summed = [1,2,3,4,5];
         println!("lpcore run");
         delay.delay_millis(1000); // FOR ESP32-S3 because the UART stuck after the HP core wake up without the delay.
         {
             let mut rtc = Rtc::new(peripherals.LPWR);
             let mut lp_context = LpContext::new(&mut lp_core, &mut rtc);
-            if let Err(e) = lpmain(&mut lp_context, &mut data, &mut result, TO_ADD) {
+            if let Err(e) = lpmain(&mut lp_context, &mut data, TO_ADD, &to_be_summed, &mut result) {
                 println!("Error running LP core: {}", e);
             }
         }
         
-        println!("result: {} (expected: {})", result, expected_sum);
+        println!("result: {} (expected: {})", result, to_be_summed.iter().sum::<i32>());
         print_list(&data);
         println!("result: {} (expected: {})", data.sum(), expected_sum + TO_ADD)
     }

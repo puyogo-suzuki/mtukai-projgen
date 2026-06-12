@@ -201,7 +201,7 @@ fn check_entry_fn_signature(item : &syn::ItemFn) -> Option<syn::Error> {
     for arg in item.sig.inputs.iter().skip(1) {
         // Check the argument is `&mut T`.
         if let FnArg::Typed(_) = arg { } // The argument is not receiver.
-        else { return gen_err("Currently, the arguments must be of type `&mut T`"); }
+        else { return gen_err("Receiver is not supported."); }
     }
     None
 }
@@ -222,6 +222,7 @@ fn collect_flat_fields(inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::tok
             Err(syn::Error::new_spanned( pat, "wildcard is unsupported." ))
         }
         match (pat, ty) {
+            // (Pat::Slice(pat_slice), Type::Array(array_ty)) => { } // Not supported because it is not popular.
             (Pat::Ident(pat_ident), ty) => {
                 if pat_ident.ident == "_" {
                     return gen_wildcard_error(pat);
@@ -269,12 +270,6 @@ fn collect_flat_fields(inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::tok
                 }
                 Ok(())
             }
-            // (Pat::Slice(pat_slice), Type::Array(array_ty)) => {
-            //     for sub_pat in pat_slice.elems.iter() {
-            //         collect_flat_fields(sub_pat, array_ty.elem.as_ref(), fields)?;
-            //     }
-            //     Ok(())
-            // }
             (Pat::Wild(_), _) | (Pat::Rest(_), _) => gen_wildcard_error(pat),
             (Pat::Or(pat_or), _) => Err(syn::Error::new(
                 pat_or.span(),
@@ -316,6 +311,7 @@ fn build_call_args(
         flat_fields: &mut std::slice::Iter<'_, FlatField>,
     ) -> syn::Result<proc_macro2::TokenStream> {
         match pat {
+            // Pat::Slice(pat_slice) => { } // Not supported because it is not popular.
             Pat::Ident(pat_ident) => {
                 let field = flat_fields
                     .next()
@@ -379,13 +375,6 @@ fn build_call_args(
                     _ => Ok(quote! { ( #(#elems),* ) }),
                 }
             }
-            // Pat::Slice(pat_slice) => {
-            //     let mut elems = Vec::with_capacity(pat_slice.elems.len());
-            //     for elem in pat_slice.elems.iter() {
-            //         elems.push(build_arg_expr(elem, flat_fields)?);
-            //     }
-            //     Ok(quote! { [ #(#elems),* ] })
-            // }
             Pat::Wild(_) | Pat::Rest(_) => Err(syn::Error::new_spanned(
                 pat,
                 "wildcard and rest patterns are not supported in generated calls",
