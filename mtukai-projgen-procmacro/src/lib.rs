@@ -325,9 +325,9 @@ fn build_call_args(
                 match ty {
                     Type::Reference(r) =>
                         Ok(if r.mutability.is_some() {
-                            quote! { unsafe { &mut *mtukai_transferred.#name } }
+                            quote! { unsafe { mtukai_transferred.#name.as_mut() } }
                         } else {
-                            quote! { unsafe { &*mtukai_transferred.#name } }
+                            quote! { unsafe { mtukai_transferred.#name.as_ref() } }
                         }),
                     _ => Ok(quote! { mtukai_transferred.#name }),
                 }
@@ -438,10 +438,9 @@ fn generate_parcel_struct(flat_fields : &Vec<FlatField>, implement_impls : bool)
         let field_dst = quote! { (&mut (*dest).#field_name) as * mut _ as *mut u8 };
         match ty {
             Type::Reference(r) => {
-                let inner_ty = &r.elem;
-                move_to_lp_stmts.extend(quote! { (*dest).#field_name = (&*(#field_src)).wrap_transfer_to_lp()? as *mut #inner_ty; });
+                move_to_lp_stmts.extend(quote! { (*dest).#field_name = #field_src.as_ref().wrap_transfer_to_lp()?; });
                 if r.mutability.is_some() {
-                    move_to_main_stmts.extend(quote! { (&mut *((*dest).#field_name)).wrap_transfer_to_main_sub(#field_src as * const _ as * const u8)?;});
+                    move_to_main_stmts.extend(quote! { ((*dest).#field_name).as_mut().wrap_transfer_to_main_sub(#field_src)?;});
                 }
             }
             Type::Path(_) => {
@@ -464,7 +463,7 @@ fn generate_parcel_struct(flat_fields : &Vec<FlatField>, implement_impls : bool)
     for flat_field in flat_fields {
         let FlatField { name, ty } = flat_field;
         let translated_ty = match ty {
-            Type::Reference(syn::TypeReference{elem, ..}) => quote!{*mut #elem},
+            Type::Reference(syn::TypeReference{elem, ..}) => quote!{NonNull<#elem>},
             Type::Path(_) => quote!{#ty},
             _ => return Err(syn::Error::new_spanned(ty, "Currently unsupported argument type.")),
         };
@@ -475,6 +474,7 @@ fn generate_parcel_struct(flat_fields : &Vec<FlatField>, implement_impls : bool)
     }
 
     Ok(quote! {
+        use core::ptr::NonNull;
         struct MtukaiParcel {
             #fields
         }
@@ -816,9 +816,10 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
                 let name = &ff.name;
                 match &ff.ty {
                     syn::Type::Reference(syn::TypeReference{ elem, mutability, .. }) => {
-                        new_args.extend(quote! { #name: #name as *mut #elem, });
                         if mutability.is_some() {
-                            update_values.extend(quote! { *#name = *transferred.#name; });
+                            new_args.extend(quote! { #name: NonNull::from_mut(#name), });
+                        } else {
+                            new_args.extend(quote! { #name: NonNull::from_ref(#name), });
                         }
                     },
                     _ => {
@@ -843,11 +844,11 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
                     };
                 }
                 let mut mtukai_transfer_value = MtukaiParcel {#new_args}; 
-                let trans = transfer_to_lp(& mtukai_transfer_value)?;
-                unsafe {((#a) as *mut *mut u8).write_volatile(trans);}
+                let trans = mtukai_transfer_value.wrap_transfer_to_lp()?;
+                unsafe {((#a) as *mut NonNull<MtukaiParcel>).write_volatile(trans);}
             },
             quote!{unsafe {
-                transfer_to_main(((#a) as *mut *mut u8).read_volatile(), &mut mtukai_transfer_value)?;
+                mtukai_transfer_value.wrap_transfer_to_main(((#a) as *mut NonNull<MtukaiParcel>).read_volatile())?;
                 core::mem::forget(mtukai_transfer_value);
             } })
         } else { (quote! {}, quote! {})};
