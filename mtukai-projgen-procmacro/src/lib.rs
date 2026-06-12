@@ -189,7 +189,7 @@ fn check_entry_fn_signature(item : &syn::ItemFn) -> Option<syn::Error> {
         return gen_err("Functions marked with #[entry] must have at least one argument: `&mut LpContext`. If you want to transfer any object, please add more arguments with the form `&mut T`.");
     }
     // Check the first argument is `&mut LpContext`.
-    if let FnArg::Typed(pt) = &item.sig.inputs[0] // The first argument is typed.
+    if let FnArg::Typed(pt) = &item.sig.inputs[0] // The first argument is not receiver.
     && let Type::Reference(r) = pt.ty.as_ref() // The first argument is a reference.
     && r.mutability.is_some() // and mutable.
     //check the name of ty is `LpContext`.
@@ -200,8 +200,7 @@ fn check_entry_fn_signature(item : &syn::ItemFn) -> Option<syn::Error> {
 
     for arg in item.sig.inputs.iter().skip(1) {
         // Check the argument is `&mut T`.
-        if let FnArg::Typed(pt) = arg // The argument is typed.
-        && let Type::Reference(_) = pt.ty.as_ref() { } // The argument is a reference.
+        if let FnArg::Typed(_) = arg { } // The argument is not receiver.
         else { return gen_err("Currently, the arguments must be of type `&mut T`"); }
     }
     None

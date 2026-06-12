@@ -68,9 +68,9 @@ impl SimpleList {
 }
 
 #[mtukai_projgen_procmacro::entry(4096)]
-fn lpmain(_ : &mut LpContext, data : &mut LPBox<SimpleList>, result : &mut i32) -> ! {
+fn lpmain(_ : &mut LpContext, data : &mut LPBox<SimpleList>, result : &mut i32, to_add : i32) -> ! {
     *result = data.sum();
-    data.push(10000);
+    data.push(to_add);
     Delay.delay_millis(1000);
     wake_hp_core();
     lp_core_halt()
@@ -120,6 +120,7 @@ fn main() -> ! {
     {
         let (list, expected_sum) = gen_list();
         print_list(&list);
+        const TO_ADD : i32 = 12345;
         let mut data = LPBox::new(list);
         let mut result = 0;
         println!("lpcore run");
@@ -127,14 +128,14 @@ fn main() -> ! {
         {
             let mut rtc = Rtc::new(peripherals.LPWR);
             let mut lp_context = LpContext::new(&mut lp_core, &mut rtc);
-            if let Err(e) = lpmain(&mut lp_context, &mut data, &mut result) {
+            if let Err(e) = lpmain(&mut lp_context, &mut data, &mut result, TO_ADD) {
                 println!("Error running LP core: {}", e);
             }
         }
         
         println!("result: {} (expected: {})", result, expected_sum);
         print_list(&data);
-        println!("result: {} (expected: {})", data.sum(), expected_sum + 10000)
+        println!("result: {} (expected: {})", data.sum(), expected_sum + TO_ADD)
     }
     loop {}
 }
