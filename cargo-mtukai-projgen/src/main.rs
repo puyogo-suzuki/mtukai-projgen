@@ -70,7 +70,34 @@ fn clone_project(src: &Path, dst: &Path,  is_ignored : fn(&Path, &Path, &Path, &
     //     fs::remove_dir_all(dst)?;
     // }
 
-    let blacklist = [src.join(GEN_DIR), src.join("Cargo.toml"), src.join("Cargo.lock")];
+    let blacklist = [src.join(GEN_DIR), src.join("Cargo.toml"), src.join("Cargo.lock"), src.join("target")];
+
+    if dst.exists() {
+        for entry in WalkDir::new(dst).contents_first(true) {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path == dst || is_ignored(path, src, dst, &blacklist) {
+                continue;
+            }
+
+            let relative = path.strip_prefix(dst)?;
+            let source_path = src.join(relative);
+
+            if source_path.exists() && !is_ignored(&source_path, src, dst, &blacklist) {
+                continue;
+            }
+
+            if entry.file_type().is_dir() {
+                fs::remove_dir_all(path)?;
+            } else {
+                let mut perms = fs::metadata(path)?.permissions();
+                perms.set_readonly(false);
+                fs::set_permissions(path, perms)?;
+                fs::remove_file(path)?;
+            }
+        }
+    }
 
     for entry in WalkDir::new(src)
         .into_iter()
