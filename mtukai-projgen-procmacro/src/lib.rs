@@ -799,7 +799,6 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             && new_sig.inputs.len() > 1 {
             let a = a as u32 + if cfg!(feature = "esp32s3") { 0x5000_0000 } else { 0 };
             let mut new_args = proc_macro2::TokenStream::new();
-            let mut update_values = proc_macro2::TokenStream::new();
             for ff in flat_fields {
                 let name = &ff.name;
                 match &ff.ty {

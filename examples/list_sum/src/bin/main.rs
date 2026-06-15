@@ -12,7 +12,7 @@
 use {
     esp_alloc as _,
     esp_hal::rtc_cntl::Rtc,
-    esp_hal::lp_core::{LpCore, LpCoreWakeupSource},
+    esp_hal::lp_core::LpCore,
     esp_rs_copro_procmacro::{define_lp_allocator},
     esp_println::{print, println}
 };
