@@ -1,18 +1,31 @@
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
+use clap::Parser;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 mod cargo_toml;
 mod project_clone;
 
-fn get_manifest_path() -> Option<String> {
-    let mut args = std::env::args().skip_while(|val| !val.starts_with("--manifest-path"));
-    match args.next() {
-        Some(ref p) if p == "--manifest-path" => args.next(),
-        Some(p) => Some(p.trim_start_matches("--manifest-path").to_string()),
-        None => None,
-    }
+/// Simple CLI for cargo-mtukai-projgen
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Path to Cargo.toml (or directory containing it)
+    #[arg(long = "manifest-path", value_name = "PATH")]
+    manifest_path: Option<PathBuf>,
+
+    /// Print generated Cargo.toml files to stdout instead of writing
+    #[arg(long = "cargo-toml")]
+    cargo_toml: bool,
+
+    /// Output directory name for generated projects (default: generated)
+    #[arg(long = "output-dir", value_name = "DIR")]
+    output_dir: Option<PathBuf>,
+
+    /// Verbose output
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 // fn __cargo_metadata_test() -> Result<()> {
@@ -34,24 +47,32 @@ fn get_manifest_path() -> Option<String> {
 //     println!("The offload directory is located at: {}", offload_dir.display());
 // }
 
-const GEN_DIR : &str = "generated";
+const GEN_DIR: &str = "generated";
 
 fn main() -> Result<()> {
-    let manifest_path = get_manifest_path();
+    let args = Args::parse();
 
-    let source = manifest_path.map(|v| {
-        let path = PathBuf::from(v);
-        if let Some(parent) = path.parent() {
-            parent.to_path_buf()
+    let source = if let Some(manifest) = &args.manifest_path {
+        // If a file was provided, use its parent; otherwise use the path as-is.
+        if manifest.is_file() {
+            manifest.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| manifest.to_path_buf())
         } else {
-            path
+            manifest.to_path_buf()
         }
-    }).unwrap_or(PathBuf::from("./")); // Current Project
-    let destination = source.join(GEN_DIR);
+    } else {
+        PathBuf::from("./")
+    };
+
+    let destination = source.join(args.output_dir.clone().unwrap_or_else(|| PathBuf::from(GEN_DIR)));
+
+    if args.verbose {
+        eprintln!("Source: {}", source.display());
+        eprintln!("Destination: {}", destination.display());
+    }
 
     let cargo_toml = cargo_toml::CargoToml::new(source.join("Cargo.toml"))?;
 
-    if std::env::args().any(|arg| arg == "--cargo-toml") {
+    if args.cargo_toml {
         println!("Main Cargo.toml:\n{}", cargo_toml.generate_main_file()?);
         println!("LP Cargo.toml:\n{}", cargo_toml.generate_lp_file()?);
         return Ok(());

@@ -8,3 +8,4 @@ anyhow = "1.0.102"
 cargo_metadata = "0.23.1"
 walkdir = "2"
 toml_edit = "0.25.11"
+clap = { version = "4", features = ["derive"] }
