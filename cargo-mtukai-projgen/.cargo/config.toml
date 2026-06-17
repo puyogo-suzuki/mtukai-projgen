@@ -1,3 +1,3 @@
 [alias]
-runx = "run -- --manifest-path ../examples/list_sum/Cargo.toml"
-showcargo = "run -- --cargo-toml --manifest-path ../examples/list_sum/Cargo.toml"
+runx = "run -- gen --manifest-path ../examples/list_sum/Cargo.toml"
+showcargo = "run -- gen --cargo-toml --manifest-path ../examples/list_sum/Cargo.toml"
