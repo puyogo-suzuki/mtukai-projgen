@@ -69,13 +69,21 @@ impl CargoToml {
             ary.push("has-lp-core");
             maintoml["features"]["default"] = toml_edit::Item::from(ary);
         }
+        if maintoml.get("package").is_none() {
+            maintoml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        if maintoml["package"].get("metadata").is_none() {
+            maintoml["package"]["metadata"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
         {
-            let metadata = if let Some(metadata) = maintoml.get_mut("metadata.mtukai")
-                && let Some(metadata2) = metadata.as_table_mut() {
+            let metadata = if let Some(metadata) = maintoml.get_mut("package")
+                && let Some(metadata) = metadata.get_mut("metadata")
+                && let Some(metadata2) = metadata.get_mut("mtukai")
+                && let Some(metadata2) = metadata2.as_table_mut() {
                 metadata2
             } else {
-                maintoml["metadata.mtukai"] = toml_edit::Item::Table(toml_edit::Table::new());
-                maintoml["metadata.mtukai"].as_table_mut().unwrap()
+                maintoml["package"]["metadata"]["mtukai"] = toml_edit::Item::Table(toml_edit::Table::new());
+                maintoml["package"]["metadata"]["mtukai"].as_table_mut().unwrap()
             };
             metadata["lp_path"] = toml_edit::Item::from(Path::new("..").join("lp").to_str().unwrap_or_default());
         }
