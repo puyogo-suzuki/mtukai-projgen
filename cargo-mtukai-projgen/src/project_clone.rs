@@ -4,30 +4,24 @@ use std::fs;
 use walkdir::WalkDir;
 
 
-pub fn clone_project(src: &Path, dst_origin: &Path, dst: &Path,  is_ignored : fn(&Path, &Path, &Path) -> bool) -> Result<()> {
-    // if dst.exists() {
-    //     fs::remove_dir_all(dst)?;
-    // }
-    let blacklist = [src.join("Cargo.toml"), src.join("Cargo.lock"), src.join("target")];
-
+pub fn clone_project(src: &Path, dst_origin: &Path, dst: &Path, dont_delete : fn(&Path, &Path, &Path) -> bool, dont_copy : fn(&Path, &Path, &Path) -> bool) -> Result<()> {
+    let blacklist = [dst.join("Cargo.toml"), dst.join("Cargo.lock"), dst.join("target")];
     let file_filter = |e: &walkdir::DirEntry| {
         let path = e.path();
         !blacklist.iter().any(|p| path.starts_with(p)) // The file is not in the blacklist.
-        && !is_ignored(path, src, dst) // The file is not ignored.
-        && path != dst // Unexpected state. leave it.
+        && !dont_delete(path, src, dst) // The file is not ignored.
     };
     if dst.exists() {
         for entry in
-            WalkDir::new(dst).contents_first(true)
+            WalkDir::new(dst)
             .into_iter()
-            .filter_entry(file_filter){
+            .filter_entry(file_filter) {
             let entry = entry?;
             let path = entry.path();
 
             if src.join(path.strip_prefix(dst)?).exists() { // The source files exists, do not delete it.
                 continue; // Ignored file.
             }
-
             if entry.file_type().is_dir() {
                 fs::remove_dir_all(path)?;
             } else {
@@ -39,6 +33,12 @@ pub fn clone_project(src: &Path, dst_origin: &Path, dst: &Path,  is_ignored : fn
         }
     }
 
+    let blacklist = [src.join("Cargo.toml"), src.join("Cargo.lock"), src.join("target")];
+    let file_filter = |e: &walkdir::DirEntry| {
+        let path = e.path();
+        !blacklist.iter().any(|p| path.starts_with(p)) // The file is not in the blacklist.
+        && !dont_copy(path, src, dst) // The file is not ignored.
+    };
     for entry in WalkDir::new(src)
         .into_iter()
         .filter_entry(|e| file_filter(e) && !e.path().starts_with(dst_origin)) {
@@ -46,6 +46,10 @@ pub fn clone_project(src: &Path, dst_origin: &Path, dst: &Path,  is_ignored : fn
         let path = entry.path();
         let relative = path.strip_prefix(src)?;
         let target_path = dst.join(relative);
+
+        if path == dst {
+            continue; // Avoid copying the destination directory into itself.
+        }
 
         if entry.file_type().is_dir() {
             fs::create_dir_all(&target_path)?;

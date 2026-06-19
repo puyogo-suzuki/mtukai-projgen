@@ -195,9 +195,16 @@ fn cmd_run(config: Config) -> Result<cargo_toml::CargoToml> {
     Ok(cargo_toml)
 }
 
-fn is_ignored_main(path: &Path, src: &Path, _dst: &Path) -> bool {
+fn dont_copy_main(path: &Path, src: &Path, _dst: &Path) -> bool {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     if path.starts_with(src.join(".cargo")) {
+        return false;
+    }
+    name.starts_with(".")
+}
+fn dont_delete_main(path: &Path, _src: &Path, dst: &Path) -> bool {
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    if path.starts_with(dst.join(".cargo")) {
         return false;
     }
     name.starts_with(".")
@@ -209,15 +216,19 @@ fn gen_main_project(
     cargo_toml: &cargo_toml::CargoToml,
 ) -> Result<()> {
     let destination = &destination_origin.join("main");
-    project_clone::clone_project(&source, &destination_origin, &destination, is_ignored_main)?;
+    project_clone::clone_project(&source, &destination_origin, &destination, dont_delete_main, dont_copy_main)?;
     let main_cargo_toml = cargo_toml.generate_main_file()?.to_string();
     fs::write(&destination.join("Cargo.toml"), main_cargo_toml)?;
     Ok(())
 }
 
-fn is_ignored_lp(path: &Path, src: &Path, _dst: &Path) -> bool {
+fn dont_copy_lp(path: &Path, src: &Path, _dst: &Path) -> bool {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     name.starts_with(".") || path.starts_with(src.join("build.rs"))
+}
+fn dont_delete_lp(path: &Path, _src: &Path, dst: &Path) -> bool {
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    name.starts_with(".") || path.starts_with(dst.join("build.rs")) || path.starts_with(dst.join("ld"))
 }
 
 fn gen_lp_project(
@@ -226,7 +237,7 @@ fn gen_lp_project(
     cargo_toml: &cargo_toml::CargoToml,
 ) -> Result<()> {
     let destination = &destination_origin.join("lp");
-    project_clone::clone_project(&source, &destination_origin, &destination, is_ignored_lp)?;
+    project_clone::clone_project(&source, &destination_origin, &destination, dont_delete_lp, dont_copy_lp)?;
     let lp_cargo_toml = cargo_toml.generate_lp_file()?.to_string();
     fs::write(&destination.join("Cargo.toml"), lp_cargo_toml)?;
     let build_rs = include_str!("lp_build_rs.txt");
