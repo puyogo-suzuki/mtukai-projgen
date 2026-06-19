@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{fs, path::{Path, PathBuf}, process::Command};
 
 mod cargo_toml;
 mod project_clone;
@@ -13,11 +12,13 @@ const GEN_DIR: &str = "generated";
 struct Config {
     manifest: PathBuf,
     destination_path: PathBuf,
-    verbose: bool,
+    build_name : String,
+    release: bool,
+    verbose: bool
 }
 
 impl Config {
-    fn new(manifest_path: Option<PathBuf>, output_dir: Option<PathBuf>, verbose: bool) -> Self {
+    fn new(manifest_path: Option<PathBuf>, output_dir: Option<PathBuf>, build_name: Option<String>, release: bool, verbose: bool) -> Self {
         let manifest = 
             manifest_path
                 .and_then(|p| {
@@ -32,8 +33,16 @@ impl Config {
         Config {
             manifest,
             destination_path,
-            verbose,
+            build_name: build_name.unwrap_or_else(|| "default".to_string()),
+            release,
+            verbose
         }
+    }
+    fn get_destination_lp(&self) -> PathBuf {
+        self.destination_path.join("lp")
+    }
+    fn get_destination_main(&self) -> PathBuf {
+        self.destination_path.join("main")
     }
 }
 
@@ -52,70 +61,44 @@ macro_rules! vprintln {
 struct Args {
     #[command(subcommand)]
     command: Commands,
+    #[arg(long = "manifest-path", short = 'm', value_name = "PATH")]
+    manifest_path: Option<PathBuf>,
+    #[arg(long = "output-dir", short = 'o', value_name = "DIR")]
+    output_dir: Option<PathBuf>,
+    #[arg(long = "build-name", short = 'b', value_name = "BUILD_NAME")]
+    build_name: Option<String>,
+    #[arg(short, long)]
+    release: bool,
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Generate project structure
     Gen {
-        #[arg(long = "manifest-path", value_name = "PATH")]
-        manifest_path: Option<PathBuf>,
-        #[arg(long = "output-dir", value_name = "DIR")]
-        output_dir: Option<PathBuf>,
         #[arg(long = "cargo-toml")]
         cargo_toml: bool,
-        #[arg(short, long)]
-        verbose: bool,
     },
     /// Build generated projects
-    Build {
-        #[arg(long = "manifest-path", value_name = "PATH")]
-        manifest_path: Option<PathBuf>,
-        #[arg(long = "output-dir", value_name = "DIR")]
-        output_dir: Option<PathBuf>,
-        #[arg(short, long)]
-        verbose: bool,
-    },
+    Build {},
     /// Run generated projects
-    Run {
-        #[arg(long = "manifest-path", value_name = "PATH")]
-        manifest_path: Option<PathBuf>,
-        #[arg(long = "output-dir", value_name = "DIR")]
-        output_dir: Option<PathBuf>,
-        #[arg(short, long)]
-        verbose: bool,
-    },
+    Run {},
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    let conf = Config::new(args.manifest_path, args.output_dir, args.build_name, args.release, args.verbose);
     match args.command {
         Commands::Gen {
-            manifest_path,
-            output_dir,
-            cargo_toml,
-            verbose,
-        } => {
-            cmd_gen(Config::new(manifest_path, output_dir, verbose), cargo_toml)
-        }
-        Commands::Build {
-            manifest_path,
-            output_dir,
-            verbose,
-        } => {
-            cmd_build(Config::new(manifest_path, output_dir, verbose))
-        }
-        Commands::Run {
-            manifest_path,
-            output_dir,
-            verbose,
-        } => {
-            cmd_run(Config::new(manifest_path, output_dir, verbose))
-        }
-    }
+            cargo_toml
+        } => cmd_gen(conf, cargo_toml),
+        Commands::Build {} => cmd_build(conf),
+        Commands::Run {} => cmd_run(conf)
+    }.map(|_| ())
 }
 
-fn cmd_gen(config: Config, cargo_toml: bool) -> Result<()> {
+fn cmd_gen(config: Config, cargo_toml: bool) -> Result<cargo_toml::CargoToml> {
     let source = config.manifest;
     let destination = config.destination_path;
     vprintln!(config, "Source: {}", source.display());
@@ -124,46 +107,92 @@ fn cmd_gen(config: Config, cargo_toml: bool) -> Result<()> {
     if cargo_toml {
         println!("Main Cargo.toml:\n{}", cargo_toml_data.generate_main_file()?);
         println!("LP Cargo.toml:\n{}", cargo_toml_data.generate_lp_file()?);
-        return Ok(());
+        return Ok(cargo_toml_data);
     }
     gen_main_project(&source, &destination, &cargo_toml_data)?;
     gen_lp_project(&source, &destination, &cargo_toml_data)?;
     println!("Full project clone completed.");
-    Ok(())
+    Ok(cargo_toml_data)
 }
 
-fn cmd_build(config: Config) -> Result<()> {
-    cmd_gen(config.clone(), false)?;
-    let destination = config.destination_path;
-    vprintln!(config, "Building projects in: {}", destination.display());
-    let main_path = destination.join("main");
-    let lp_path = destination.join("lp");
-    if lp_path.exists() {
-        println!("Building LP project...");
-        todo!("Building the LP project is not implemented yet.");
-        vprintln!(config, "LP project path: {}", lp_path.display());
+fn build_lp(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>) -> Result<()> {
+    let lp_path = config.get_destination_lp();
+    vprintln!(config, "LP project path: {}", lp_path.display());
+    if !lp_path.exists() {
+        return Err(anyhow::anyhow!("LP project not found at {}", lp_path.display()));
     }
-    if main_path.exists() {
-        println!("Building main project...");
-        todo!("Building the main project is not implemented yet.");
-        vprintln!(config, "Main project path: {}", main_path.display());
+    let mut args = vec!["build".to_owned()];
+    if let Some(lp_target) = &build_config.lp_target {
+        args.push(format!("--target={}", lp_target));
     }
+    if let Some(lp_features) = &build_config.lp_features {
+        args.push(format!("--features={}", lp_features));
+    }
+    if let Some(lp_args) = &build_config.lp_args {
+        args.extend(shell_words::split(lp_args).map_err(|e| anyhow::anyhow!("Failed to parse lp_args: {}", e))?);
+    }
+    let status = Command::new("cargo")
+        .args(&args)
+        .env_clear()
+        .envs(envs)
+        .current_dir(&lp_path)
+        .status()?;
+    if !status.success() {
+        Err(anyhow::anyhow!("cargo build failed for LP project"))
+    } else {
+        Ok(())
+    }
+}
+
+fn build_main(config: &Config, _build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>) -> Result<()> {
+    let main_path = config.get_destination_main();
+    vprintln!(config, "Main project path: {}", main_path.display());
+    if !main_path.exists() {
+        return Err(anyhow::anyhow!("Main project not found at {}", main_path.display()));
+    }
+    let status = Command::new("cargo")
+        .args(&["build"])
+        .env_clear()
+        .envs(envs)
+        .current_dir(&main_path)
+        .status()?;
+    if !status.success() {
+        Err(anyhow::anyhow!("cargo build failed for main project"))
+    } else {
+        Ok(())
+    }
+}
+
+fn get_filtered_env() -> std::collections::HashMap<String, String> {
+    std::env::vars().filter(|&(ref k, _)|
+        !(k.starts_with("CARGO_") || k.starts_with("RUSTUP_") || k.starts_with("RUST_"))
+    ).collect()
+}
+
+fn cmd_build(config: Config) -> Result<cargo_toml::CargoToml> {
+    let filtered_env = get_filtered_env();
+    let cargo_toml = cmd_gen(config.clone(), false)?;
+    vprintln!(config, "Building projects in: {}", config.destination_path.display());
+    let build_config = cargo_toml.get_build_config(config.build_name.clone()).ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?;
+    println!("Building LP project...");
+    build_lp(&config, build_config, &filtered_env)?;
+    println!("Building main project...");
+    build_main(&config, build_config, &filtered_env)?;
     println!("Build completed.");
-    Ok(())
+    Ok(cargo_toml)
 }
 
-fn cmd_run(config: Config) -> Result<()> {
-    cmd_build(config.clone())?;
-    let destination = config.destination_path;
-    vprintln!(config, "Running projects in: {}", destination.display());
-    let main_path = destination.join("main");
+fn cmd_run(config: Config) -> Result<cargo_toml::CargoToml> {
+    let cargo_toml = cmd_build(config.clone())?;
+    vprintln!(config, "Running projects in: {}", config.destination_path.display());
+    let main_path = config.get_destination_main();
     if main_path.exists() {
         println!("Running main project...");
         todo!("Running the main project is not implemented yet.");
         vprintln!(config, "Main project path: {}", main_path.display());
     }
     println!("Run completed.");
-    Ok(())
+    Ok(cargo_toml)
 }
 
 fn is_ignored_main(path: &Path, src: &Path, _dst: &Path) -> bool {

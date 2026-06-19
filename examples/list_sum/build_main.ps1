@@ -1,1 +1,0 @@
-cd generated/main; cargo run; cd ../..

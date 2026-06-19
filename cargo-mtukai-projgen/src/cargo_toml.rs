@@ -2,9 +2,18 @@ use anyhow::{Context, Result};
 use toml_edit::{DocumentMut};
 use std::path::Path;
 
+#[derive(Debug)]
+pub struct BuildConfig {
+    pub name : String,
+    pub lp_target : Option<String>,
+    pub lp_features : Option<String>,
+    pub lp_args : Option<String>
+}
+
 pub struct CargoToml {
     doc: DocumentMut,
-    name: String
+    name: String,
+    build_configs: Vec<BuildConfig>
 }
 
 impl CargoToml {
@@ -12,7 +21,35 @@ impl CargoToml {
         let content = std::fs::read_to_string(path)?;
         let doc : DocumentMut = content.parse()?;
         let name = doc["package"]["name"].as_str().context("Name is missing")?.to_string();
-        Ok(CargoToml { doc, name })
+
+        let build_configs = Self::read_build_configs(&doc)?;
+
+        Ok(CargoToml { doc, name, build_configs })
+    }
+
+    pub fn get_build_configs(&self) -> &Vec<BuildConfig> {
+        &self.build_configs
+    }
+
+    pub fn get_build_config<S: AsRef<str>>(&self, name: S) -> Option<&BuildConfig> {
+        self.build_configs.iter().find(|bc| bc.name == *name.as_ref())
+    }
+
+    fn read_build_configs(dm : &DocumentMut) -> Result<Vec<BuildConfig>> {
+        let mut build_configs = Vec::new();
+        if let Some(builds) = dm.get("package").and_then(|pkg| pkg.get("metadata"))
+            .and_then(|meta| meta.get("mtukai")).and_then(|mtukai| mtukai.get("build")) {
+            if let Some(array) = builds.as_array_of_tables() {
+                for item in array.iter() {
+                    let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let lp_target = item.get("lp_target").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let lp_features = item.get("lp_features").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let lp_args = item.get("lp_args").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    build_configs.push(BuildConfig { name: name.to_string(), lp_target, lp_features, lp_args });
+                }
+            }
+        }
+        Ok(build_configs)
     }
 
     fn translate_dependencies_path(dep_table : &mut toml_edit::Table) {
