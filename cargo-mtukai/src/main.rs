@@ -150,8 +150,9 @@ fn impl_cargo_exec_main(config: &Config, _build_config : &cargo_toml::BuildConfi
     if !main_path.exists() {
         return Err(anyhow::anyhow!("Main project not found at {}", main_path.display()));
     }
+    let args = if config.release { &[cmd, "--release"] as &[&str] } else { &[cmd] as &[&str] };
     let status = Command::new("cargo")
-        .args(&[cmd])
+        .args(args)
         .env_clear()
         .envs(envs)
         .current_dir(&main_path)

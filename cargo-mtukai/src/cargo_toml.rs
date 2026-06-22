@@ -27,10 +27,6 @@ impl CargoToml {
         Ok(CargoToml { doc, name, build_configs })
     }
 
-    pub fn get_build_configs(&self) -> &Vec<BuildConfig> {
-        &self.build_configs
-    }
-
     pub fn get_build_config<S: AsRef<str>>(&self, name: S) -> Option<&BuildConfig> {
         self.build_configs.iter().find(|bc| bc.name == *name.as_ref())
     }
