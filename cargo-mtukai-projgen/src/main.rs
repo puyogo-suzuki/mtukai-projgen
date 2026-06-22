@@ -144,23 +144,31 @@ fn build_lp(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &st
     }
 }
 
-fn build_main(config: &Config, _build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>) -> Result<()> {
+fn impl_cargo_exec_main(config: &Config, _build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>, cmd : &str) -> Result<()> {
     let main_path = config.get_destination_main();
     vprintln!(config, "Main project path: {}", main_path.display());
     if !main_path.exists() {
         return Err(anyhow::anyhow!("Main project not found at {}", main_path.display()));
     }
     let status = Command::new("cargo")
-        .args(&["build"])
+        .args(&[cmd])
         .env_clear()
         .envs(envs)
         .current_dir(&main_path)
         .status()?;
     if !status.success() {
-        Err(anyhow::anyhow!("cargo build failed for main project"))
+        Err(anyhow::anyhow!("cargo {} failed for main project", cmd))
     } else {
         Ok(())
     }
+}
+
+fn build_main(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>) -> Result<()> {
+    impl_cargo_exec_main(config, build_config, envs, "build")
+}
+
+fn run_main(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>) -> Result<()> {
+    impl_cargo_exec_main(config, build_config, envs, "run")
 }
 
 fn get_filtered_env() -> std::collections::HashMap<String, String> {
@@ -170,8 +178,8 @@ fn get_filtered_env() -> std::collections::HashMap<String, String> {
 }
 
 fn cmd_build(config: Config) -> Result<cargo_toml::CargoToml> {
-    let filtered_env = get_filtered_env();
     let cargo_toml = cmd_gen(config.clone(), false)?;
+    let filtered_env = get_filtered_env();
     vprintln!(config, "Building projects in: {}", config.destination_path.display());
     let build_config = cargo_toml.get_build_config(config.build_name.clone()).ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?;
     println!("Building LP project...");
@@ -183,14 +191,14 @@ fn cmd_build(config: Config) -> Result<cargo_toml::CargoToml> {
 }
 
 fn cmd_run(config: Config) -> Result<cargo_toml::CargoToml> {
-    let cargo_toml = cmd_build(config.clone())?;
+    let cargo_toml = cmd_gen(config.clone(), false)?;
+    let filtered_env = get_filtered_env();
     vprintln!(config, "Running projects in: {}", config.destination_path.display());
-    let main_path = config.get_destination_main();
-    if main_path.exists() {
-        println!("Running main project...");
-        todo!("Running the main project is not implemented yet.");
-        vprintln!(config, "Main project path: {}", main_path.display());
-    }
+    let build_config = cargo_toml.get_build_config(config.build_name.clone()).ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?;
+    println!("Building LP project...");
+    build_lp(&config, build_config, &filtered_env)?;
+    println!("Running main project...");
+    run_main(&config, build_config, &filtered_env)?;
     println!("Run completed.");
     Ok(cargo_toml)
 }

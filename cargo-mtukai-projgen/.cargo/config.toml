@@ -1,4 +1,4 @@
 [alias]
-runx = "run -- --manifest-path ../examples/list_sum/Cargo.toml build"
+runx = "run -- --manifest-path ../examples/list_sum/Cargo.toml run"
 genx = "run -- --manifest-path ../examples/list_sum/Cargo.toml gen"
 showcargo = "run -- --manifest-path ../examples/list_sum/Cargo.toml gen --cargo-toml"
