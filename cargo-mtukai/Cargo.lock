@@ -68,7 +68,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cargo-mtukai-projgen"
+name = "cargo-mtukai"
 version = "0.1.0"
 dependencies = [
  "anyhow",
