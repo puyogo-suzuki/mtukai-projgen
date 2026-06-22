@@ -1,8 +1,37 @@
 use anyhow::{Context, Result};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::fs;
 use walkdir::WalkDir;
 
+fn gen_symbolic_link(src: &Path, dst: &Path) -> Result<()> {
+    if dst.exists() {
+        fs::remove_file(dst)?;
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(src, dst)?;
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(src, dst)?;
+    Ok(())
+}
+
+/// Compare the modification times of the source and destination files to determine if an update is required.
+fn requires_update(src: &Path, dst: &Path) -> Result<bool> {
+    if !dst.exists() {
+        return Ok(true);
+    }
+    let src_metadata = fs::metadata(src)?;
+    let dst_metadata = fs::metadata(dst)?;
+    if dst_metadata.is_symlink() {
+        let symlink_target = fs::read_link(dst)?;
+        let src_canon = src.canonicalize()?;
+        let target_canon = symlink_target.canonicalize()?;
+        if src_canon == target_canon {
+            return Ok(false);
+        }
+    }    
+    Ok(src_metadata.modified()? > dst_metadata.modified()?)
+}
 
 pub fn clone_project(src: &Path, dst_origin: &Path, dst: &Path, dont_delete : fn(&Path, &Path, &Path) -> bool, dont_copy : fn(&Path, &Path, &Path) -> bool) -> Result<()> {
     let blacklist = [dst.join("Cargo.toml"), dst.join("Cargo.lock"), dst.join("target")];
@@ -60,26 +89,24 @@ pub fn clone_project(src: &Path, dst_origin: &Path, dst: &Path, dont_delete : fn
 
             // Compare modification times - only copy if source is newer than target
             let should_copy = if target_path.exists() {
-                let target_metadata = fs::metadata(&target_path)?;
-                let source_metadata = fs::metadata(path)?;
-                
-                let target_modified = target_metadata.modified()?;
-                let source_modified = source_metadata.modified()?;
-                
-                let res = source_modified > target_modified;
-                if res {
-                    let mut perm = target_metadata.permissions();
+                if requires_update(path, &target_path)? {
+                    let mut perm = fs::metadata(&target_path)?.permissions();
                     perm.set_readonly(false);
                     fs::set_permissions(&target_path, perm)?;
+                    true
+                } else {
+                    false
                 }
-                res
             } else {
                 true
             };
 
             if should_copy {
-                fs::copy(path, &target_path)
-                    .with_context(|| format!("Failed to copy {:?}", path))?;
+                if target_path.extension() == Some(OsStr::new("rs"))
+                || gen_symbolic_link(path, &target_path).is_err(){
+                    fs::copy(path, &target_path)
+                        .with_context(|| format!("Failed to copy {:?}", path))?;
+                }
 
                 let mut perms = fs::metadata(&target_path)?.permissions();
                 perms.set_readonly(true);
