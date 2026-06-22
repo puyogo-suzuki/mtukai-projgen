@@ -36,20 +36,18 @@ impl CargoToml {
     fn read_build_configs(dm : &DocumentMut) -> Result<Vec<BuildConfig>> {
         let mut build_configs = Vec::new();
         if let Some(builds) = dm.get("package").and_then(|pkg| pkg.get("metadata"))
-            .and_then(|meta| meta.get("mtukai")).and_then(|mtukai| mtukai.get("build")) {
-            if let Some(array) = builds.as_array_of_tables() {
-                for item in array.iter() {
-                    let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("default");
-                    let chip_conf = item.get("chip").and_then(|v| v.as_str()).and_then(|chipname| get_conf_by_chip_name(chipname));
-                    let (lp_target, lp_features, lp_args) = chip_conf.map(|chip_conf| {
-                        (Some(chip_conf.lp_target.to_owned()), Some(chip_conf.lp_features.to_owned()), Some(chip_conf.lp_args.to_owned()))
-                    }).unwrap_or((None, None, None));
-                    let lp_target = item.get("lp_target").and_then(|v| v.as_str()).map_or_else(|| lp_target, |s| Some(s.to_string()));
-                    let lp_features = item.get("lp_features").and_then(|v| v.as_str()).map_or_else(|| lp_features, |s| Some(s.to_string()));
-                    let lp_args = item.get("lp_args").and_then(|v| v.as_str()).map_or_else(|| lp_args, |s| Some(s.to_string()));
-                    let lp_release = item.get("lp_release").and_then(|v| v.as_bool()).unwrap_or(true);
-                    build_configs.push(BuildConfig { name: name.to_string(), lp_target, lp_features, lp_args, lp_release });
-                }
+            .and_then(|meta| meta.get("mtukai")).and_then(|mtukai| mtukai.get("build")).and_then(|b| b.as_array_of_tables()) {
+            for item in builds.iter() {
+                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("default");
+                let chip_conf = item.get("chip").and_then(|v| v.as_str()).and_then(|chipname| get_conf_by_chip_name(chipname));
+                let (lp_target, lp_features, lp_args) = chip_conf.map(|chip_conf| {
+                    (Some(chip_conf.lp_target.to_owned()), Some(chip_conf.lp_features.to_owned()), Some(chip_conf.lp_args.to_owned()))
+                }).unwrap_or((None, None, None));
+                let lp_target = item.get("lp_target").and_then(|v| v.as_str()).map(|s| s.to_string()).or(lp_target);
+                let lp_features = item.get("lp_features").and_then(|v| v.as_str()).map(|s| s.to_string()).or(lp_features);
+                let lp_args = item.get("lp_args").and_then(|v| v.as_str()).map(|s| s.to_string()).or(lp_args);
+                let lp_release = item.get("lp_release").and_then(|v| v.as_bool()).unwrap_or(true);
+                build_configs.push(BuildConfig { name: name.to_string(), lp_target, lp_features, lp_args, lp_release });
             }
         }
         Ok(build_configs)
@@ -57,8 +55,7 @@ impl CargoToml {
 
     fn translate_dependencies_path(dep_table : &mut toml_edit::Table) {
         for (_, value) in dep_table.iter_mut() {
-            if let Some(v_tbl) = value.as_inline_table_mut()
-                && let Some(path_item) = v_tbl.get_mut("path")
+            if let Some(path_item) = value.as_inline_table_mut().and_then(|tbl| tbl.get_mut("path"))
                 && let Some(path_str) = path_item.as_str()
                 // Check if the path is relative.
                 && Path::new(path_str).is_relative() {
@@ -75,14 +72,11 @@ impl CargoToml {
         //
         // Prepare features.
         //
-        if let Some(default_features) = lptoml["features"].get_mut("default")
-            && let Some(ary) = default_features.as_array_mut() {
-            ary.push("is-lp-core");
-        } else {
-            let mut ary = toml_edit::Array::new();
-            ary.push("is-lp-core");
-            lptoml["features"]["default"] = toml_edit::Item::from(ary);
-        }
+        let default_features = lptoml.entry("features").or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+            .as_table_mut().expect("toml_edit has a bug.")
+            .entry("default").or_insert_with(|| toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new())))
+            .as_array_mut().expect("toml_edit has a bug.");
+        default_features.push("is-lp-core");
         //
         // Prepare dependencies.
         //
@@ -101,14 +95,11 @@ impl CargoToml {
     pub fn generate_main_file(&self) -> Result<DocumentMut> {
         // Implementation for generating main file
         let mut maintoml = self.doc.clone();
-        if let Some(default_features) = maintoml["features"].get_mut("default")
-            && let Some(ary) = default_features.as_array_mut() {
-            ary.push("has-lp-core");
-        } else {
-            let mut ary = toml_edit::Array::new();
-            ary.push("has-lp-core");
-            maintoml["features"]["default"] = toml_edit::Item::from(ary);
-        }
+        let default_features = maintoml.entry("features").or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+            .as_table_mut().expect("toml_edit has a bug.")
+            .entry("default").or_insert_with(|| toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new())))
+            .as_array_mut().expect("toml_edit has a bug.");
+        default_features.push("has-lp-core");
 
         let metadata =
             maintoml.entry("package").or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
