@@ -612,7 +612,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             #parcel_struct
             let mtukai_transferred = get_transfer::<MtukaiParcel>().unwrap();
             #orig_name(&mut #self_crate::LpContext::new(), #(#arg_exprs),*);
-            core::mem::forget(mtukai_transferred); // Do not free the transferred data, as it is now owned by the main processor.
+            #[allow(unreachable_code)] core::mem::forget(mtukai_transferred); // Do not free the transferred data, as it is now owned by the main processor.
         }
         #input
     }.into()
