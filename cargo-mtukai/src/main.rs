@@ -4,6 +4,7 @@ use std::{fs, path::{Path, PathBuf}, process::Command};
 
 mod cargo_toml;
 mod project_clone;
+mod chip_dic;
 
 const GEN_DIR: &str = "generated";
 
@@ -130,6 +131,9 @@ fn build_lp(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &st
     }
     if let Some(lp_args) = &build_config.lp_args {
         args.extend(shell_words::split(lp_args).map_err(|e| anyhow::anyhow!("Failed to parse lp_args: {}", e))?);
+    }
+    if build_config.lp_release {
+        args.push("--release".to_string());
     }
     let status = Command::new("cargo")
         .args(&args)

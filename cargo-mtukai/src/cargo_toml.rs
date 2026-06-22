@@ -1,13 +1,15 @@
 use anyhow::{Context, Result};
 use toml_edit::{DocumentMut};
 use std::path::Path;
+use crate::chip_dic::get_conf_by_chip_name;
 
 #[derive(Debug)]
 pub struct BuildConfig {
     pub name : String,
     pub lp_target : Option<String>,
     pub lp_features : Option<String>,
-    pub lp_args : Option<String>
+    pub lp_args : Option<String>,
+    pub lp_release : bool
 }
 
 pub struct CargoToml {
@@ -37,11 +39,16 @@ impl CargoToml {
             .and_then(|meta| meta.get("mtukai")).and_then(|mtukai| mtukai.get("build")) {
             if let Some(array) = builds.as_array_of_tables() {
                 for item in array.iter() {
-                    let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    let lp_target = item.get("lp_target").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let lp_features = item.get("lp_features").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let lp_args = item.get("lp_args").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    build_configs.push(BuildConfig { name: name.to_string(), lp_target, lp_features, lp_args });
+                    let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("default");
+                    let chip_conf = item.get("chip").and_then(|v| v.as_str()).and_then(|chipname| get_conf_by_chip_name(chipname));
+                    let (lp_target, lp_features, lp_args) = chip_conf.map(|chip_conf| {
+                        (Some(chip_conf.lp_target.to_owned()), Some(chip_conf.lp_features.to_owned()), Some(chip_conf.lp_args.to_owned()))
+                    }).unwrap_or((None, None, None));
+                    let lp_target = item.get("lp_target").and_then(|v| v.as_str()).map_or_else(|| lp_target, |s| Some(s.to_string()));
+                    let lp_features = item.get("lp_features").and_then(|v| v.as_str()).map_or_else(|| lp_features, |s| Some(s.to_string()));
+                    let lp_args = item.get("lp_args").and_then(|v| v.as_str()).map_or_else(|| lp_args, |s| Some(s.to_string()));
+                    let lp_release = item.get("lp_release").and_then(|v| v.as_bool()).unwrap_or(true);
+                    build_configs.push(BuildConfig { name: name.to_string(), lp_target, lp_features, lp_args, lp_release });
                 }
             }
         }
