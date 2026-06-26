@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::{cell::RefCell, fs, path::{Path, PathBuf}, process::Command};
+use crate::cargo_toml::BuildParameter;
 
 mod cargo_toml;
 mod project_clone;
@@ -133,25 +134,30 @@ fn cmd_gen(config: &Config, cargo_toml: bool) -> Result<cargo_toml::CargoToml> {
     Ok(cargo_toml_data)
 }
 
+fn gen_args<S: AsRef<str>>(command : S, build_parameter : &BuildParameter, release : bool) -> Result<Vec<String>> {
+    let mut args = vec![command.as_ref().to_owned()];
+    if let Some(target) = &build_parameter.target {
+        args.push(format!("--target={}", target));
+    }
+    if let Some(features) = &build_parameter.features {
+        args.push(format!("--features={}", features));
+    }
+    if let Some(args_str) = &build_parameter.args {
+        args.extend(shell_words::split(args_str).map_err(|e| anyhow::anyhow!("Failed to parse args: {}", e))?);
+    }
+    if release || build_parameter.release {
+        args.push("--release".to_string());
+    }
+    Ok(args)
+}
+
 fn build_lp(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>) -> Result<()> {
     let lp_path = config.get_destination_lp_full();
     vprintln!(config, "LP project path: {}", lp_path.display());
     if !lp_path.exists() {
         return Err(anyhow::anyhow!("LP project not found at {}", lp_path.display()));
     }
-    let mut args = vec!["build".to_owned()];
-    if let Some(lp_target) = &build_config.lp_target {
-        args.push(format!("--target={}", lp_target));
-    }
-    if let Some(lp_features) = &build_config.lp_features {
-        args.push(format!("--features={}", lp_features));
-    }
-    if let Some(lp_args) = &build_config.lp_args {
-        args.extend(shell_words::split(lp_args).map_err(|e| anyhow::anyhow!("Failed to parse lp_args: {}", e))?);
-    }
-    if build_config.lp_release {
-        args.push("--release".to_string());
-    }
+    let args = gen_args("build", &build_config.lp_params, config.release)?;
     let status = Command::new("cargo")
         .args(&args)
         .env_clear()
@@ -165,13 +171,13 @@ fn build_lp(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &st
     }
 }
 
-fn impl_cargo_exec_main(config: &Config, _build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>, cmd : &str) -> Result<()> {
+fn impl_cargo_exec_main(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>, cmd : &str) -> Result<()> {
     let main_path = config.get_destination_main_full();
     vprintln!(config, "Main project path: {}", main_path.display());
     if !main_path.exists() {
         return Err(anyhow::anyhow!("Main project not found at {}", main_path.display()));
     }
-    let args = if config.release { &[cmd, "--release"] as &[&str] } else { &[cmd] as &[&str] };
+    let args = gen_args(cmd, &build_config.main_params, config.release)?;
     let status = Command::new("cargo")
         .args(args)
         .env_clear()

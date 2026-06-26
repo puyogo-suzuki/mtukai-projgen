@@ -3,14 +3,25 @@ use toml_edit::{DocumentMut};
 use std::path::{Path, PathBuf};
 use crate::chip_dic::get_conf_by_chip_name;
 
+fn get_table_or_create<'a>(entry: toml_edit::Entry<'a>) -> &'a mut toml_edit::Table {
+    entry.or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_mut().expect("toml_edit has a bug.")
+}
+
+#[derive(Debug)]
+pub struct BuildParameter {
+    pub target : Option<String>,
+    pub features : Option<String>,
+    pub args : Option<String>,
+    pub release : bool
+}
+
 #[derive(Debug)]
 pub struct BuildConfig {
     pub name : String,
     pub template_name : String,
-    pub lp_target : Option<String>,
-    pub lp_features : Option<String>,
-    pub lp_args : Option<String>,
-    pub lp_release : bool
+    pub lp_params : BuildParameter,
+    pub main_params : BuildParameter
 }
 
 pub struct CargoToml {
@@ -24,14 +35,24 @@ impl CargoToml {
         let content = std::fs::read_to_string(path)?;
         let doc : DocumentMut = content.parse()?;
         let name = doc["package"]["name"].as_str().context("Name is missing")?.to_string();
-
         let build_configs = Self::read_build_configs(&doc)?;
-
         Ok(CargoToml { doc, name, build_configs })
     }
 
     pub fn get_build_config<S: AsRef<str>>(&self, name: S) -> Option<&BuildConfig> {
         self.build_configs.iter().find(|bc| bc.name == *name.as_ref())
+    }
+
+    fn read_build_parameters<S: AsRef<str>>(item: &toml_edit::Table, chip_conf: &Option<crate::chip_dic::ChipConf>, prefix : S, release_default : bool) -> BuildParameter {
+        let (target, features, args) = match chip_conf {
+            Some(crate::chip_dic::ChipConf { lp_target, lp_features, lp_args, .. }) => (Some(lp_target.to_owned().to_owned()), Some(lp_features.to_owned().to_owned()), Some(lp_args.to_owned().to_owned())),
+            None => (None, None, None)
+        };
+        let target = item.get(format!("{}target", prefix.as_ref()).as_ref()).and_then(|v| v.as_str()).map(|s| s.to_string()).or(target);
+        let features = item.get(format!("{}features", prefix.as_ref()).as_ref()).and_then(|v| v.as_str()).map(|s| s.to_string()).or(features);
+        let args = item.get(format!("{}args", prefix.as_ref()).as_ref()).and_then(|v| v.as_str()).map(|s| s.to_string()).or(args);
+        let release = item.get(format!("{}release", prefix.as_ref()).as_ref()).and_then(|v| v.as_bool()).unwrap_or(release_default);
+        BuildParameter { target, features, args, release }
     }
 
     fn read_build_configs(dm : &DocumentMut) -> Result<Vec<BuildConfig>> {
@@ -41,15 +62,11 @@ impl CargoToml {
             for item in builds.iter() {
                 let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("default");
                 let chip_conf = item.get("chip").and_then(|v| v.as_str()).and_then(|chipname| get_conf_by_chip_name(chipname));
-                let (lp_target, lp_features, lp_args, template_name) = chip_conf.map(|chip_conf| {
-                    (Some(chip_conf.lp_target.to_owned()), Some(chip_conf.lp_features.to_owned()), Some(chip_conf.lp_args.to_owned()), Some(chip_conf.template.to_owned()))
-                }).unwrap_or((None, None, None, None));
-                let lp_target = item.get("lp_target").and_then(|v| v.as_str()).map(|s| s.to_string()).or(lp_target);
-                let lp_features = item.get("lp_features").and_then(|v| v.as_str()).map(|s| s.to_string()).or(lp_features);
-                let lp_args = item.get("lp_args").and_then(|v| v.as_str()).map(|s| s.to_string()).or(lp_args);
-                let lp_release = item.get("lp_release").and_then(|v| v.as_bool()).unwrap_or(true);
-                let template_name = item.get("template").and_then(|v| v.as_str()).map(|s| s.to_string()).or(template_name).unwrap_or(name.to_string());
-                build_configs.push(BuildConfig { name: name.to_string(), template_name, lp_target, lp_features, lp_args, lp_release });
+                let lp_params = Self::read_build_parameters(item, &chip_conf, "lp_", true);
+                let main_params = Self::read_build_parameters(item, &chip_conf, "main_", false);
+                let template_name = item.get("template").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    .or(chip_conf.map(|c| c.template.to_owned())).unwrap_or(name.to_string());
+                build_configs.push(BuildConfig { name: name.to_string(), template_name, lp_params, main_params });
             }
         }
         Ok(build_configs)
@@ -75,8 +92,7 @@ impl CargoToml {
         //
         // Prepare features.
         //
-        let default_features = lptoml.entry("features").or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
-            .as_table_mut().expect("toml_edit has a bug.")
+        let default_features = get_table_or_create(lptoml.entry("features"))
             .entry("default").or_insert_with(|| toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new())))
             .as_array_mut().expect("toml_edit has a bug.");
         default_features.push("is-lp-core");
@@ -98,19 +114,15 @@ impl CargoToml {
     pub fn generate_main_file(&self, original_path: &PathBuf) -> Result<DocumentMut> {
         // Implementation for generating main file
         let mut maintoml = self.doc.clone();
-        let default_features = maintoml.entry("features").or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
-            .as_table_mut().expect("toml_edit has a bug.")
+        let default_features =
+            get_table_or_create(maintoml.entry("features"))
             .entry("default").or_insert_with(|| toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new())))
             .as_array_mut().expect("toml_edit has a bug.");
         default_features.push("has-lp-core");
 
         let metadata =
-            maintoml.entry("package").or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
-                    .as_table_mut().expect("toml_edit has a bug.")
-                    .entry("metadata").or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
-                    .as_table_mut().expect("toml_edit has a bug.")
-                    .entry("mtukai").or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
-                    .as_table_mut().expect("toml_edit has a bug.");
+            get_table_or_create(get_table_or_create(get_table_or_create(
+                maintoml.entry("package")).entry("metadata")).entry("mtukai"));
         metadata["lp_path"] = toml_edit::Item::from(Path::new("..").join("lp").to_str().unwrap_or_default());
         if let Some(deps) =  maintoml["dependencies"].as_table_mut() {
             Self::translate_dependencies_path(deps, original_path).with_context(|| "Failed to translate dependencies path")?;
