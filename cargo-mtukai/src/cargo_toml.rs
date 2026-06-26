@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use toml_edit::{DocumentMut};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use crate::chip_dic::get_conf_by_chip_name;
 
 #[derive(Debug)]
@@ -55,20 +55,21 @@ impl CargoToml {
         Ok(build_configs)
     }
 
-    fn translate_dependencies_path(dep_table : &mut toml_edit::Table) {
-        for (_, value) in dep_table.iter_mut() {
+    fn translate_dependencies_path(dep_table : &mut toml_edit::Table, original_path: &PathBuf) -> Result<()> {
+        for (k, value) in dep_table.iter_mut() {
             if let Some(path_item) = value.as_inline_table_mut().and_then(|tbl| tbl.get_mut("path"))
                 && let Some(path_str) = path_item.as_str()
                 // Check if the path is relative.
                 && Path::new(path_str).is_relative() {
                 // Update the path to point to the main directory
-                let new_path = format!("../../{}", path_str);
-                *path_item = new_path.into();
+                let new_path = original_path.join(path_str).canonicalize().with_context(|| format!("Failed to resolve path for the library {}", k.get()))?;
+                *path_item = new_path.to_str().with_context(|| format!("Failed to resolve path for the library {}", k.get()))?.into();
             }
         }
+        Ok(())
     }
 
-    pub fn generate_lp_file(&self) -> Result<DocumentMut> {
+    pub fn generate_lp_file(&self, original_path: &PathBuf) -> Result<DocumentMut> {
         // Implementation for generating LP file
         let mut lptoml = self.doc.clone();
         //
@@ -82,10 +83,10 @@ impl CargoToml {
         //
         // Prepare dependencies.
         //
-        // For dependencies that refer to the relative path,
-        lptoml["dependencies"].as_table_mut().map(|deps| {
-            Self::translate_dependencies_path(deps);
-        });
+        // For dependencies that refer to the relative path.
+        if let Some(deps) = lptoml["dependencies"].as_table_mut() {
+            Self::translate_dependencies_path(deps, original_path).with_context(|| "Failed to translate dependencies path")?;
+        }
         //
         // Remove the 'bin' section
         //
@@ -94,7 +95,7 @@ impl CargoToml {
         Ok(lptoml)
     }
 
-    pub fn generate_main_file(&self) -> Result<DocumentMut> {
+    pub fn generate_main_file(&self, original_path: &PathBuf) -> Result<DocumentMut> {
         // Implementation for generating main file
         let mut maintoml = self.doc.clone();
         let default_features = maintoml.entry("features").or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
@@ -111,9 +112,9 @@ impl CargoToml {
                     .entry("mtukai").or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
                     .as_table_mut().expect("toml_edit has a bug.");
         metadata["lp_path"] = toml_edit::Item::from(Path::new("..").join("lp").to_str().unwrap_or_default());
-        maintoml["dependencies"].as_table_mut().map(|deps: &mut toml_edit::Table| {
-            Self::translate_dependencies_path(deps);
-        });
+        if let Some(deps) =  maintoml["dependencies"].as_table_mut() {
+            Self::translate_dependencies_path(deps, original_path).with_context(|| "Failed to translate dependencies path")?;
+        }
         Ok(maintoml)
     }
 }
