@@ -6,6 +6,7 @@ use crate::chip_dic::get_conf_by_chip_name;
 #[derive(Debug)]
 pub struct BuildConfig {
     pub name : String,
+    pub template_name : String,
     pub lp_target : Option<String>,
     pub lp_features : Option<String>,
     pub lp_args : Option<String>,
@@ -15,7 +16,7 @@ pub struct BuildConfig {
 pub struct CargoToml {
     doc: DocumentMut,
     name: String,
-    build_configs: Vec<BuildConfig>
+    build_configs: Vec<BuildConfig>,
 }
 
 impl CargoToml {
@@ -40,14 +41,15 @@ impl CargoToml {
             for item in builds.iter() {
                 let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("default");
                 let chip_conf = item.get("chip").and_then(|v| v.as_str()).and_then(|chipname| get_conf_by_chip_name(chipname));
-                let (lp_target, lp_features, lp_args) = chip_conf.map(|chip_conf| {
-                    (Some(chip_conf.lp_target.to_owned()), Some(chip_conf.lp_features.to_owned()), Some(chip_conf.lp_args.to_owned()))
-                }).unwrap_or((None, None, None));
+                let (lp_target, lp_features, lp_args, template_name) = chip_conf.map(|chip_conf| {
+                    (Some(chip_conf.lp_target.to_owned()), Some(chip_conf.lp_features.to_owned()), Some(chip_conf.lp_args.to_owned()), Some(chip_conf.template.to_owned()))
+                }).unwrap_or((None, None, None, None));
                 let lp_target = item.get("lp_target").and_then(|v| v.as_str()).map(|s| s.to_string()).or(lp_target);
                 let lp_features = item.get("lp_features").and_then(|v| v.as_str()).map(|s| s.to_string()).or(lp_features);
                 let lp_args = item.get("lp_args").and_then(|v| v.as_str()).map(|s| s.to_string()).or(lp_args);
                 let lp_release = item.get("lp_release").and_then(|v| v.as_bool()).unwrap_or(true);
-                build_configs.push(BuildConfig { name: name.to_string(), lp_target, lp_features, lp_args, lp_release });
+                let template_name = item.get("template").and_then(|v| v.as_str()).map(|s| s.to_string()).or(template_name).unwrap_or(name.to_string());
+                build_configs.push(BuildConfig { name: name.to_string(), template_name, lp_target, lp_features, lp_args, lp_release });
             }
         }
         Ok(build_configs)

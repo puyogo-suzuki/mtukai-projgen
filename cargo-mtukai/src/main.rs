@@ -105,13 +105,15 @@ fn cmd_gen(config: Config, cargo_toml: bool) -> Result<cargo_toml::CargoToml> {
     vprintln!(config, "Source: {}", source.display());
     vprintln!(config, "Destination: {}", destination.display());
     let cargo_toml_data = cargo_toml::CargoToml::new(source.join("Cargo.toml"))?;
+    let template_name = &cargo_toml_data.get_build_config(&config.build_name)
+        .ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?.template_name;
     if cargo_toml {
         println!("Main Cargo.toml:\n{}", cargo_toml_data.generate_main_file()?);
         println!("LP Cargo.toml:\n{}", cargo_toml_data.generate_lp_file()?);
         return Ok(cargo_toml_data);
     }
-    gen_main_project(&source, &destination, &cargo_toml_data)?;
-    gen_lp_project(&source, &destination, &cargo_toml_data)?;
+    gen_main_project(template_name, &source, &destination, &cargo_toml_data)?;
+    gen_lp_project(template_name, &source, &destination, &cargo_toml_data)?;
     println!("Full project clone completed.");
     Ok(cargo_toml_data)
 }
@@ -186,7 +188,7 @@ fn cmd_build(config: Config) -> Result<cargo_toml::CargoToml> {
     let cargo_toml = cmd_gen(config.clone(), false)?;
     let filtered_env = get_filtered_env();
     vprintln!(config, "Building projects in: {}", config.destination_path.display());
-    let build_config = cargo_toml.get_build_config(config.build_name.clone()).ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?;
+    let build_config = cargo_toml.get_build_config(&config.build_name).ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?;
     println!("Building LP project...");
     build_lp(&config, build_config, &filtered_env)?;
     println!("Building main project...");
@@ -199,7 +201,7 @@ fn cmd_run(config: Config) -> Result<cargo_toml::CargoToml> {
     let cargo_toml = cmd_gen(config.clone(), false)?;
     let filtered_env = get_filtered_env();
     vprintln!(config, "Running projects in: {}", config.destination_path.display());
-    let build_config = cargo_toml.get_build_config(config.build_name.clone()).ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?;
+    let build_config = cargo_toml.get_build_config(&config.build_name).ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?;
     println!("Building LP project...");
     build_lp(&config, build_config, &filtered_env)?;
     println!("Running main project...");
@@ -208,59 +210,51 @@ fn cmd_run(config: Config) -> Result<cargo_toml::CargoToml> {
     Ok(cargo_toml)
 }
 
-fn dont_copy_main(path: &Path, src: &Path, _dst: &Path) -> bool {
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    if path.starts_with(src.join(".cargo")) {
-        return false;
-    }
-    name.starts_with(".")
+fn dont_copy_main(_path: &Path, _src: &Path, _dst: &Path) -> bool {
+    false
 }
-fn dont_delete_main(path: &Path, _src: &Path, dst: &Path) -> bool {
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    if path.starts_with(dst.join(".cargo")) {
-        return false;
-    }
-    name.starts_with(".")
+fn dont_delete_main(_path: &Path, _src: &Path, _dst: &Path) -> bool {
+    false
 }
 
-fn gen_main_project(
+fn get_template_path(base_path: &Path) -> PathBuf {
+    base_path.join("template")
+}
+fn get_template_path_after<S: AsRef<str>, S1: AsRef<str>>(template_name: S, proc_name: S1) -> PathBuf {
+    Path::new(template_name.as_ref()).join(proc_name.as_ref())
+}
+
+fn gen_main_project<S: AsRef<str>>(
+    template_name: S,
     source: &Path,
     destination_origin: &Path,
     cargo_toml: &cargo_toml::CargoToml,
 ) -> Result<()> {
-    let destination = &destination_origin.join("main");
-    project_clone::clone_project(&source, &destination_origin, &destination, dont_delete_main, dont_copy_main)?;
+    project_clone::clone_project(&source, &destination_origin, &Path::new("main"),
+        &get_template_path(&source), &get_template_path_after(template_name, "main"),
+        dont_delete_main, dont_copy_main)?;
     let main_cargo_toml = cargo_toml.generate_main_file()?.to_string();
-    fs::write(&destination.join("Cargo.toml"), main_cargo_toml)?;
+    fs::write(&destination_origin.join("main").join("Cargo.toml"), main_cargo_toml)?;
     Ok(())
 }
 
-fn dont_copy_lp(path: &Path, src: &Path, _dst: &Path) -> bool {
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    name.starts_with(".") || path.starts_with(src.join("build.rs"))
+fn dont_copy_lp(_path: &Path, _src: &Path, _dst: &Path) -> bool {
+    false
 }
-fn dont_delete_lp(path: &Path, _src: &Path, dst: &Path) -> bool {
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    name.starts_with(".") || path.starts_with(dst.join("build.rs")) || path.starts_with(dst.join("ld"))
+fn dont_delete_lp(_path: &Path, _src: &Path, _dst: &Path) -> bool {
+    false
 }
 
-fn gen_lp_project(
+fn gen_lp_project<S: AsRef<str>>(
+    template_name: S,
     source: &Path,
     destination_origin: &Path,
     cargo_toml: &cargo_toml::CargoToml,
 ) -> Result<()> {
-    let destination = &destination_origin.join("lp");
-    project_clone::clone_project(&source, &destination_origin, &destination, dont_delete_lp, dont_copy_lp)?;
+    project_clone::clone_project(&source, &destination_origin, &Path::new("lp"),
+        &get_template_path(&source), &get_template_path_after(template_name, "lp"),
+        dont_delete_lp, dont_copy_lp)?;
     let lp_cargo_toml = cargo_toml.generate_lp_file()?.to_string();
-    fs::write(&destination.join("Cargo.toml"), lp_cargo_toml)?;
-    let build_rs = include_str!("lp_build_rs.txt");
-    fs::write(&destination.join("build.rs"), build_rs)?;
-    if let Ok(false) = fs::exists(&destination.join("ld")) {
-        fs::create_dir(&destination.join("ld"))?;
-    }
-    let link_lp_x = include_str!("lp_ld_link_lp_x.txt");
-    fs::write(&destination.join("ld").join("link-lp.x"), link_lp_x)?;
-    let link_ulp_x = include_str!("lp_ld_link_ulp_x.txt");
-    fs::write(&destination.join("ld").join("link-ulp.x"), link_ulp_x)?;
+    fs::write(&destination_origin.join("lp").join("Cargo.toml"), lp_cargo_toml)?;
     Ok(())
 }
