@@ -729,7 +729,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     let imports = quote! {
         use #hal_crate::ulp_core::UlpCore as LpCore;
         use #hal_crate::ulp_core::UlpCoreWakeupSource as LpCoreWakeupSource;
-        use #hal_crate::rtc_cntl::sleep::UlpWakeupSource;
+        use #hal_crate::rtc_cntl::sleep::UlpWakeupSource as WakeFromLpCoreWakeupSource;
         #copro_crate_use;
     };
 

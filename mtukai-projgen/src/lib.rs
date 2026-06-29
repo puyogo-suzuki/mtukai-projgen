@@ -23,6 +23,10 @@ impl<'ctx, 'core, 'rtc> LpContext<'ctx, 'core, 'rtc> {
     pub fn new(lp_core: &'core mut esp_hal::lp_core::LpCore<'core>, rtc: &'rtc mut esp_hal::rtc_cntl::Rtc<'rtc>) -> LpContext<'ctx, 'core, 'rtc> {
         LpContext { lp_core, rtc, phantom_ctx: core::marker::PhantomData }
     }
+    #[cfg(all(feature = "has-lp-core", feature = "esp32s3"))]
+    pub fn new(lp_core: &'core mut esp_hal::ulp_core::UlpCore<'core>, rtc: &'rtc mut esp_hal::rtc_cntl::Rtc<'rtc>) -> LpContext<'ctx, 'core, 'rtc> {
+        LpContext { lp_core, rtc, phantom_ctx: core::marker::PhantomData }
+    }
 
     #[cfg(feature = "is-lp-core")]
     pub fn new() -> LpContext<'ctx, 'core, 'rtc> {
