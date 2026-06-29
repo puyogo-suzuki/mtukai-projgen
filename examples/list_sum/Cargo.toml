@@ -9,9 +9,18 @@ path = "./src/bin/main.rs"
 
 [[package.metadata.mtukai.build]]
 name = "default"
-lp_features = "esp32c6"
-lp_target = "riscv32imac-unknown-none-elf"
+lp = {
+    features = "esp32c6",
+    target = "riscv32imac-unknown-none-elf"
+}
+main = {
+    features = "esp32c6"
+}
 template = "esp32c6"
+
+[[package.metadata.mtukai.build]]
+name = "esp32s3"
+chip = "esp32s3"
 
 [dependencies]
 esp-println = { version="0.17.0", features = ["log-04"], optional = true}
@@ -36,7 +45,6 @@ critical-section = {version ="1.2.0", optional = true }
 esp-alloc = { version = "0.10.0", optional = true }
 
 [features]
-default = [ "esp32c6" ]
 esp32c6 = [ "esp-backtrace?/esp32c6", "esp-bootloader-esp-idf?/esp32c6", "esp-hal?/esp32c6", "esp-lp-hal?/esp32c6", "esp-rs-copro/esp32c6", "esp-alloc?/esp32c6", "esp-rs-copro-procmacro/esp32c6", "mtukai-projgen/esp32c6", "mtukai-projgen-procmacro/esp32c6" ]
 esp32s3 = [ "esp-backtrace?/esp32s3", "esp-bootloader-esp-idf?/esp32s3", "esp-hal?/esp32s3", "esp-lp-hal?/esp32s3", "esp-rs-copro/esp32s3", "esp-alloc?/esp32s3", "esp-rs-copro-procmacro/esp32s3", "mtukai-projgen/esp32s3", "mtukai-projgen-procmacro/esp32s3" ]
 has-lp-core = [ "esp-rs-copro/has-lp-core", "esp-rs-copro-procmacro/has-lp-core", "mtukai-projgen-procmacro/has-lp-core", "mtukai-projgen/has-lp-core", "dep:esp-println", "dep:esp-backtrace", "dep:esp-bootloader-esp-idf", "dep:esp-hal", "dep:critical-section", "dep:esp-alloc" ]

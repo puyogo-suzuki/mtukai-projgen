@@ -1,4 +1,6 @@
 [alias]
 runx = "run -- --manifest-path ../examples/list_sum/Cargo.toml run"
+runxs3 = "run -- --manifest-path ../examples/list_sum/Cargo.toml -b esp32s3 run"
+
 genx = "run -- --manifest-path ../examples/list_sum/Cargo.toml gen"
 showcargo = "run -- --manifest-path ../examples/list_sum/Cargo.toml gen --cargo-toml"

@@ -12,10 +12,13 @@
 use {
     esp_alloc as _,
     esp_hal::rtc_cntl::Rtc,
-    esp_hal::lp_core::LpCore,
     esp_rs_copro_procmacro::{define_lp_allocator},
     esp_println::{print, println}
 };
+#[cfg(all(feature="esp32c6", feature="has-lp-core"))]
+use esp_hal::lp_core::LpCore;
+#[cfg(all(feature = "esp32s3", feature="has-lp-core"))]
+use esp_hal::ulp_core::UlpCore;
 
 use esp_rs_copro::{lpbox::LPBox, prelude::*};
 use core::option::Option;
@@ -111,8 +114,11 @@ fn main() -> ! {
     esp_println::logger::init_logger_from_env();
     let delay = esp_hal::delay::Delay::new();
     let peripherals = esp_hal::init(esp_hal::Config::default());
-    
+        
+    #[cfg(feature = "esp32c6")]
     let mut lp_core = LpCore::new(peripherals.LP_CORE);
+    #[cfg(feature = "esp32s3")]
+    let mut lp_core = UlpCore::new(peripherals.ULP_RISCV_CORE);
     lp_core.stop();
     println!("lp core stopped");
 
