@@ -3,9 +3,12 @@ use toml_edit::{DocumentMut};
 use std::path::{Path, PathBuf};
 use crate::chip_dic::get_conf_by_chip_name;
 
-fn get_table_or_create<'a>(entry: toml_edit::Entry<'a>) -> &'a mut toml_edit::Table {
+/// Return `entry` as a mutable `toml_edit::Table`.
+/// If it is not a table, returns a error.
+/// If it is empty, creates a new table and returns it.
+fn get_table_or_create<'a>(entry: toml_edit::Entry<'a>) -> Result<&'a mut toml_edit::Table> {
     entry.or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
-        .as_table_mut().expect("toml_edit has a bug.")
+        .as_table_mut().context("Unexpected non-table value in Cargo.toml.")
 }
 
 #[derive(Debug)]
@@ -94,10 +97,11 @@ impl CargoToml {
         Ok(())
     }
 
-    fn prepare_feature(toml_doc: &mut toml_edit::Table, feature_name: &str) {
-        get_table_or_create(toml_doc.entry("features")).entry("default")
+    fn prepare_feature(toml_doc: &mut toml_edit::Table, feature_name: &str) -> Result<()> {
+        get_table_or_create(toml_doc.entry("features"))?.entry("default")
             .or_insert_with(|| toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new())))
-            .as_array_mut().expect("toml_edit has a bug.").push(feature_name);
+            .as_array_mut().context("Unexpected non-array value in Cargo.toml.")?.push(feature_name);
+        Ok(())
     }
 
     /// Update the dependencies path in the Cargo.toml document.
@@ -112,7 +116,7 @@ impl CargoToml {
         // Implementation for generating LP file
         let mut lptoml = self.doc.clone();
         
-        Self::prepare_feature(&mut lptoml, "is-lp-core");
+        Self::prepare_feature(&mut lptoml, "is-lp-core")?;
         Self::prepare_dependencies(&mut lptoml, original_path)?;
         //
         // Remove the 'bin' section
@@ -125,12 +129,12 @@ impl CargoToml {
     pub fn generate_main_file(&self, original_path: &PathBuf) -> Result<DocumentMut> {
         // Implementation for generating main file
         let mut maintoml = self.doc.clone();
-        Self::prepare_feature(&mut maintoml, "has-lp-core");
+        Self::prepare_feature(&mut maintoml, "has-lp-core")?;
         Self::prepare_dependencies(&mut maintoml, original_path)?;
 
         let metadata =
             get_table_or_create(get_table_or_create(get_table_or_create(
-                maintoml.entry("package")).entry("metadata")).entry("mtukai"));
+                maintoml.entry("package"))?.entry("metadata"))?.entry("mtukai"))?;
         metadata["lp_path"] = toml_edit::Item::from(Path::new("..").join("lp").to_str().unwrap_or_default());
         Ok(maintoml)
     }
