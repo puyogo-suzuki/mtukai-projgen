@@ -11,29 +11,47 @@ fn get_table_or_create<'a>(entry: toml_edit::Entry<'a>) -> Result<&'a mut toml_e
         .as_table_mut().context("Unexpected non-table value in Cargo.toml.")
 }
 
+/// Build parameters given to cargo.
 #[derive(Debug)]
 pub struct BuildParameter {
+    /// Target triple
     pub target : Option<String>,
+    /// Enabled features
     pub features : Option<String>,
+    /// Additional arguments to cargo
     pub args : Option<String>,
+    /// Is release build?
     pub release : bool
 }
 
+/// Build configuration
 #[derive(Debug)]
 pub struct BuildConfig {
+    /// Build configuration name
     pub name : String,
+    /// Template name for ./template/<template_name>/{lp, main}
     pub template_name : String,
+    /// Build parameters for LP coprocessor project
     pub lp_params : BuildParameter,
+    /// Build parameters for main processor project
     pub main_params : BuildParameter
 }
 
+/// Summerized representation of Cargo.toml file.
 pub struct CargoToml {
+    /// Raw Cargo.toml document
     doc: DocumentMut,
+    /// Crate name
     name: String,
+    /// Build configurations defined in Cargo.toml
+    /// The build configurations are defined in the `[[package.metadata.mtukai.build]]` section of Cargo.toml.
     build_configs: Vec<BuildConfig>,
 }
 
 impl CargoToml {
+    /// Create a new `CargoToml` instance from the given path to Cargo.toml file.
+    /// This function reads the Cargo.toml file, parses it, and extracts the crate name and build configurations.
+    /// It returns error if the toml does not contains the crate name or if the metadata of the mtukai is not valid.
     pub fn new<P : AsRef<Path>>(path: P) -> Result<CargoToml> {
         let content = std::fs::read_to_string(path)?;
         let doc : DocumentMut = content.parse()?;
@@ -42,15 +60,21 @@ impl CargoToml {
         Ok(CargoToml { doc, name, build_configs })
     }
 
+    /// Get the build configuration by name.
+    /// Returns `None` if the build configuration with the given name does not exist.
     pub fn get_build_config<S: AsRef<str>>(&self, name: S) -> Option<&BuildConfig> {
         self.build_configs.iter().find(|bc| bc.name == *name.as_ref())
     }
 
+    /// Read build parameters from the `[[package.metadata.mtukai.build]]` section of Cargo.toml.
+    /// `release_default` is 
     fn read_build_parameters(item: Option<&toml_edit::InlineTable>, chip_conf: &Option<crate::chip_dic::ChipConfParams>, release_default : bool) -> BuildParameter {
+        // Check if the `chip` is available.
         let (target, features, args) = match chip_conf {
             Some(crate::chip_dic::ChipConfParams { target, features, args }) => (Some(target.to_owned().to_owned()), Some(features.to_owned().to_owned()), Some(args.to_owned().to_owned())),
             None => (None, None, None)
         };
+        // Check the inline table is available.
         if let Some(item) = item {
             let target = item.get("target").and_then(|v| v.as_str()).map(|s| s.to_string()).or(target);
             let features = item.get("features").and_then(|v| v.as_str()).map(|s| s.to_string()).or(features);
@@ -62,6 +86,8 @@ impl CargoToml {
         }
     }
 
+    /// Read build configurations from the `[[package.metadata.mtukai.build]]` section of Cargo.toml.
+    /// Returns a vector of `BuildConfig` instances.
     fn read_build_configs(dm : &DocumentMut) -> Result<Vec<BuildConfig>> {
         let mut build_configs = Vec::new();
         if let Some(builds) = dm.get("package").and_then(|pkg| pkg.get("metadata"))
@@ -83,6 +109,7 @@ impl CargoToml {
         Ok(build_configs)
     }
 
+    /// Translates the relative path to the dependencies.
     fn translate_dependencies_path(dep_table : &mut toml_edit::Table, original_path: &PathBuf) -> Result<()> {
         for (k, value) in dep_table.iter_mut() {
             if let Some(path_item) = value.as_inline_table_mut().and_then(|tbl| tbl.get_mut("path"))
@@ -97,6 +124,7 @@ impl CargoToml {
         Ok(())
     }
 
+    /// Set default features.
     fn prepare_feature(toml_doc: &mut toml_edit::Table, feature_name: &str) -> Result<()> {
         get_table_or_create(toml_doc.entry("features"))?.entry("default")
             .or_insert_with(|| toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new())))
@@ -112,6 +140,7 @@ impl CargoToml {
         Ok(())
     }
 
+    /// Generate the Cargo.toml for the LP coprocessor project.
     pub fn generate_lp_file(&self, original_path: &PathBuf) -> Result<DocumentMut> {
         // Implementation for generating LP file
         let mut lptoml = self.doc.clone();
@@ -126,6 +155,7 @@ impl CargoToml {
         Ok(lptoml)
     }
 
+    /// Generate the Cargo.toml for the main processor project.
     pub fn generate_main_file(&self, original_path: &PathBuf) -> Result<DocumentMut> {
         // Implementation for generating main file
         let mut maintoml = self.doc.clone();
