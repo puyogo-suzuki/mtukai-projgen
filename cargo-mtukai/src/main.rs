@@ -3,8 +3,10 @@ use clap::{Parser, Subcommand};
 use std::{cell::RefCell, fs, path::{Path, PathBuf}, process::Command};
 use crate::cargo_toml::BuildParameter;
 
+/// Cargo.toml utilities
 mod cargo_toml;
 mod project_clone;
+/// Chip configuration dictionary
 mod chip_dic;
 
 const GEN_DIR: &str = "generated";

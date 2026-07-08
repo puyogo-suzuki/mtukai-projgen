@@ -1,15 +1,24 @@
+/// Chip configuration parameters
 pub struct ChipConfParams {
+    /// Target chip
     pub target : &'static str,
+    /// Features for the target chip
     pub features : &'static str,
+    /// Additional arguments for the target chip
     pub args : &'static str,
 }
 
+/// Chip configuration for a specific chip
 pub struct ChipConf {
+    /// Parameters for the main processor
     pub main : ChipConfParams,
+    /// Parameters for the LP coporcessor
     pub lp : ChipConfParams,
+    /// Template name for the chip configuration
     pub template : &'static str,
 }
 
+/// Get chip configuration based on the chip name
 pub fn get_conf_by_chip_name<S: AsRef<str>>(chip_name: S) -> Option<ChipConf> {
     // Implementation for retrieving chip configuration based on name
     match chip_name.as_ref().to_lowercase().as_str() {
