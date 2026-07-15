@@ -8,6 +8,7 @@ mod cargo_toml;
 mod project_clone;
 /// Chip configuration dictionary
 mod chip_dic;
+mod analyze_def_use;
 
 const GEN_DIR: &str = "generated";
 
@@ -106,16 +107,27 @@ enum Commands {
     Build {},
     /// Run generated projects
     Run {},
+    /// Run debug mode.
+    Debug {},
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     let conf = Config::new(args.manifest_path, args.output_dir, args.build_name, args.release, args.verbose);
     match args.command {
-        Commands::Gen { cargo_toml } => cmd_gen(&conf, cargo_toml),
-        Commands::Build {} => cmd_build(&conf),
-        Commands::Run {} => cmd_run(&conf)
-    }.map(|_| ())
+        Commands::Gen { cargo_toml } => cmd_gen(&conf, cargo_toml).map(|_| ()),
+        Commands::Build {} => cmd_build(&conf).map(|_| ()),
+        Commands::Run {} => cmd_run(&conf).map(|_| ()),
+        Commands::Debug {} => cmd_debug(&conf)
+    }
+}
+
+fn cmd_debug(config: &Config) -> Result<()> {
+    let cargo_toml_data = cargo_toml::CargoToml::new(config.manifest.join("Cargo.toml"))?;
+    let features = cargo_toml_data.get_build_config(&config.build_name)
+        .ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?.lp_params.features.clone().unwrap_or_else(|| "".to_string());
+    analyze_def_use::analyze_def_use(&config.manifest, if features.is_empty() {"is-lp-core".to_owned()} else {features + ",is-lp-core"})?;
+    Ok(())
 }
 
 fn cmd_gen(config: &Config, cargo_toml: bool) -> Result<cargo_toml::CargoToml> {
