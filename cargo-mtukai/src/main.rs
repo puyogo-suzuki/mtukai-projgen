@@ -137,6 +137,7 @@ fn cmd_gen(config: &Config, cargo_toml: bool) -> Result<cargo_toml::CargoToml> {
     Ok(cargo_toml_data)
 }
 
+/// Generate arguments given for cargo.
 fn gen_args<S: AsRef<str>>(command : S, build_parameter : &BuildParameter, release : bool) -> Result<Vec<String>> {
     let mut args = vec![command.as_ref().to_owned()];
     if let Some(target) = &build_parameter.target {
@@ -154,6 +155,7 @@ fn gen_args<S: AsRef<str>>(command : S, build_parameter : &BuildParameter, relea
     Ok(args)
 }
 
+/// Execute cargo for the LP project.
 fn build_lp(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>) -> Result<()> {
     let lp_path = config.get_destination_lp_full();
     vprintln!(config, "LP project path: {}", lp_path.display());
@@ -174,6 +176,7 @@ fn build_lp(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &st
     }
 }
 
+/// Execute cargo for the main project.
 fn impl_cargo_exec_main(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>, cmd : &str) -> Result<()> {
     let main_path = config.get_destination_main_full();
     vprintln!(config, "Main project path: {}", main_path.display());
@@ -194,20 +197,24 @@ fn impl_cargo_exec_main(config: &Config, build_config : &cargo_toml::BuildConfig
     }
 }
 
+/// Build the main project.
 fn build_main(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>) -> Result<()> {
     impl_cargo_exec_main(config, build_config, envs, "build")
 }
 
+/// Run the main project.
 fn run_main(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>) -> Result<()> {
     impl_cargo_exec_main(config, build_config, envs, "run")
 }
 
+/// This prevents ignoring rust-toolchain.toml.
 fn get_filtered_env() -> std::collections::HashMap<String, String> {
     std::env::vars().filter(|&(ref k, _)|
         !(k.starts_with("CARGO_") || k.starts_with("RUSTUP_") || k.starts_with("RUST_"))
     ).collect()
 }
 
+/// Build command
 fn cmd_build(config: &Config) -> Result<cargo_toml::CargoToml> {
     let cargo_toml = cmd_gen(config, false)?;
     let filtered_env = get_filtered_env();
@@ -221,6 +228,7 @@ fn cmd_build(config: &Config) -> Result<cargo_toml::CargoToml> {
     Ok(cargo_toml)
 }
 
+/// Run command
 fn cmd_run(config: &Config) -> Result<cargo_toml::CargoToml> {
     let cargo_toml = cmd_gen(config, false)?;
     let filtered_env = get_filtered_env();
