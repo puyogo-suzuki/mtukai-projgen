@@ -5,6 +5,7 @@ use crate::cargo_toml::BuildParameter;
 
 /// Cargo.toml utilities
 mod cargo_toml;
+/// Clone projects
 mod project_clone;
 /// Chip configuration dictionary
 mod chip_dic;
