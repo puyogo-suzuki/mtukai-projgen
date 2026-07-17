@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use walkdir::WalkDir;
 
+/// Generate a symbolic link.
+/// If any file exists on the destination, this removes the file.
 fn gen_symbolic_link(src: &Path, dst: &Path) -> Result<()> {
     if dst.exists() {
         fs::remove_file(dst)?;
@@ -17,7 +19,8 @@ fn gen_symbolic_link(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Compare the modification times of the source and destination files to determine if an update is required.
+/// Compare the modification dates of the source and destination files to determine if an update is required.
+/// If the destination file is a symbolic link, this checks that the destination of the symlink equals to the `src` path.
 fn requires_update(src: &Path, dst: &Path) -> Result<bool> {
     if !dst.exists() {
         return Ok(true);
@@ -35,6 +38,7 @@ fn requires_update(src: &Path, dst: &Path) -> Result<bool> {
     Ok(src_metadata.modified()? > dst_metadata.modified()?)
 }
 
+/// Make the file readonly.
 fn set_readonly(path: &Path, readonly: bool) -> Result<()> {
     let mut perms = fs::metadata(path)?.permissions();
     perms.set_readonly(readonly);
@@ -42,6 +46,20 @@ fn set_readonly(path: &Path, readonly: bool) -> Result<()> {
     Ok(())
 }
 
+/// Clone the project.
+/// `src` is the source project path.
+/// `dst_origin` is the path of the destination**s**.
+/// The destination path is the concat of `dst_origin` and `dst_after`.
+/// `template_origin` is the path of the template**s**.
+/// The template path is the concat of `template_origin` and `template_after`.
+/// `dont_delete` and `dont_copy` verify the file must not be deleted or copied.
+/// The first argument is the relative path to be deleted/copied.
+/// The second argument is the source origin path and the third is the destination origin path.
+///
+/// ## Implementation
+/// This function does not delete/copy `$dst/Cargo.toml`, `$dst/Cargo.lock`, and `$dst/target`.
+/// ### Deletion
+/// This 
 pub fn clone_project(src: &Path, dst_origin: &Path, dst_after: &Path, template_origin: &Path, template_after: &Path,  dont_delete : fn(&Path, &Path, &Path) -> bool, dont_copy : fn(&Path, &Path, &Path) -> bool) -> Result<()> {
     let template_src_path = template_origin.join(template_after);
     let dst = dst_origin.join(dst_after);
@@ -56,17 +74,16 @@ pub fn clone_project(src: &Path, dst_origin: &Path, dst_after: &Path, template_o
             WalkDir::new(&dst)
             .into_iter()
             .filter_entry(file_filter) {
-            let entry = entry?;
+            let entry = entry?; // The error seems fatal.
             let path = entry.path();
 
-            let relative = path.strip_prefix(&dst)?;
+            let relative = path.strip_prefix(&dst)?; // If it throws an error, dst may a symbolic link?
             if src.join(relative).exists() || template_src_path.join(relative).exists() { // The source files exists, do not delete it.
                 continue; // Ignored file.
             }
             if entry.file_type().is_dir() {
                 fs::remove_dir_all(path)?;
             } else {
-                set_readonly(path, false)?;
                 fs::remove_file(path)?;
             }
         }
@@ -80,7 +97,7 @@ pub fn clone_project(src: &Path, dst_origin: &Path, dst_after: &Path, template_o
                     let path = e.path();
                     !blacklist.iter().any(|p| path.starts_with(p)) // The file is not in the blacklist.
                     && !dont_copy(path, src, &dst) // The file is not ignored.
-                    && !e.path().starts_with(dst_origin)
+                    && !e.path().starts_with(dst_origin) // The file is in the destinations.
                 }) {
             let entry = entry?;
             let path = entry.path();
@@ -98,15 +115,11 @@ pub fn clone_project(src: &Path, dst_origin: &Path, dst_after: &Path, template_o
                     fs::create_dir_all(parent)?;
                 }
 
-                let target_exists = target_path.exists();
                 // Compare modification times - only copy if source is newer than target
-                let should_copy = target_exists && requires_update(path, &target_path)?;
+                let should_copy = requires_update(path, &target_path)?;
 
                 // If conflicting, skip copying the file to avoid overwriting existing files in the destination.
-                if (!target_exists || should_copy) && !is_conflict(relative) {
-                    if should_copy {
-                        set_readonly(&target_path, false)?;
-                    }
+                if should_copy && !is_conflict(relative) {
                     if target_path.extension() == Some(OsStr::new("rs")) // Rust source files are not copied as a symbolic link.
                     || gen_symbolic_link(path, &target_path).is_err(){ // If not, try to create a symbolic link.
                         fs::copy(path, &target_path) // If symbolic link creation fails, copy the file instead.
