@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::{cell::RefCell, fs, path::{Path, PathBuf}, process::Command};
-use crate::cargo_toml::BuildParameter;
+use crate::{cargo_toml::BuildParameter, project_clone::copy_decision_default};
 
 /// Cargo.toml utilities
 mod cargo_toml;
@@ -254,9 +254,6 @@ fn cmd_run(config: &Config) -> Result<cargo_toml::CargoToml> {
     Ok(cargo_toml)
 }
 
-fn dont_copy_main(_path: &Path, _src: &Path, _dst: &Path) -> bool {
-    false
-}
 fn dont_delete_main(_path: &Path, _src: &Path, _dst: &Path) -> bool {
     false
 }
@@ -270,15 +267,12 @@ fn gen_main_project(
 ) -> Result<()> {
     project_clone::clone_project(&config.manifest, &config.get_destination_path(), &config.get_gen_double("main"),
         &get_template_path(&config.manifest), &config.get_gen_double("main"),
-        dont_delete_main, dont_copy_main)?;
+        dont_delete_main, copy_decision_default)?;
     let main_cargo_toml = cargo_toml.generate_main_file(&config.manifest)?.to_string();
     fs::write(&config.get_destination_main_full().join("Cargo.toml"), main_cargo_toml)?;
     Ok(())
 }
 
-fn dont_copy_lp(_path: &Path, _src: &Path, _dst: &Path) -> bool {
-    false
-}
 fn dont_delete_lp(_path: &Path, _src: &Path, _dst: &Path) -> bool {
     false
 }
@@ -288,7 +282,7 @@ fn gen_lp_project(
 ) -> Result<()> {
     project_clone::clone_project(&config.manifest, &config.get_destination_path(), &config.get_gen_double("lp"),
         &get_template_path(&config.manifest), &config.get_gen_double("lp"),
-        dont_delete_lp, dont_copy_lp)?;
+        dont_delete_lp, copy_decision_default)?;
     let lp_cargo_toml = cargo_toml.generate_lp_file(&config.manifest)?.to_string();
     fs::write(&config.get_destination_lp_full().join("Cargo.toml"), lp_cargo_toml)?;
     Ok(())

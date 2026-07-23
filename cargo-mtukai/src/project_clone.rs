@@ -4,6 +4,32 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use walkdir::WalkDir;
 
+pub enum CopyingDecision {
+    /// Do not copy the file, Remove it.
+    DontCopy,
+    /// Ignore the file, do not update.
+    Ignore,
+    /// Copy the file as is. (Maybe symbolic link)
+    Passthrough,
+    /// Copy the modified content.
+    TextRewriting(String)
+}
+
+pub fn copy_decision_default(relative: &Path, src: &Path, dst: &Path) -> CopyingDecision {
+    // compare the modification times - only copy if source is newer than target
+    let src_path = src.join(relative);
+    let dst_path = dst.join(relative);
+    if !dst_path.exists() {
+        return CopyingDecision::Passthrough;
+    } else {
+        match requires_update(&src_path, &dst_path) {
+            Ok(true) => CopyingDecision::Passthrough,
+            Ok(false) => CopyingDecision::Ignore,
+            Err(_) => CopyingDecision::Passthrough
+        }
+    }
+}
+
 /// Generate a symbolic link.
 /// If any file exists on the destination, this removes the file.
 fn gen_symbolic_link(src: &Path, dst: &Path) -> Result<()> {
@@ -60,7 +86,7 @@ fn set_readonly(path: &Path, readonly: bool) -> Result<()> {
 /// This function does not delete/copy `$dst/Cargo.toml`, `$dst/Cargo.lock`, and `$dst/target`.
 /// ### Deletion
 /// This 
-pub fn clone_project(src: &Path, dst_origin: &Path, dst_after: &Path, template_origin: &Path, template_after: &Path,  dont_delete : fn(&Path, &Path, &Path) -> bool, dont_copy : fn(&Path, &Path, &Path) -> bool) -> Result<()> {
+pub fn clone_project(src: &Path, dst_origin: &Path, dst_after: &Path, template_origin: &Path, template_after: &Path,  dont_delete : fn(&Path, &Path, &Path) -> bool, copy_decision : fn(&Path, &Path, &Path) -> CopyingDecision) -> Result<()> {
     let template_src_path = template_origin.join(template_after);
     let dst = dst_origin.join(dst_after);
     let blacklist = [dst.join("Cargo.toml"), dst.join("Cargo.lock"), dst.join("target")];
@@ -96,7 +122,6 @@ pub fn clone_project(src: &Path, dst_origin: &Path, dst_after: &Path, template_o
                 .filter_entry(|e| {
                     let path = e.path();
                     !blacklist.iter().any(|p| path.starts_with(p)) // The file is not in the blacklist.
-                    && !dont_copy(path, src, &dst) // The file is not ignored.
                     && !e.path().starts_with(dst_origin) // The file is in the destinations.
                 }) {
             let entry = entry?;
@@ -114,19 +139,28 @@ pub fn clone_project(src: &Path, dst_origin: &Path, dst_after: &Path, template_o
                 if let Some(parent) = target_path.parent() {
                     fs::create_dir_all(parent)?;
                 }
-
-                // Compare modification times - only copy if source is newer than target
-                let should_copy = requires_update(path, &target_path)?;
-
-                // If conflicting, skip copying the file to avoid overwriting existing files in the destination.
-                if should_copy && !is_conflict(relative) {
-                    if target_path.extension() == Some(OsStr::new("rs")) // Rust source files are not copied as a symbolic link.
-                    || gen_symbolic_link(path, &target_path).is_err(){ // If not, try to create a symbolic link.
-                        fs::copy(path, &target_path) // If symbolic link creation fails, copy the file instead.
-                            .with_context(|| format!("Failed to copy {:?}", path))?;
-                    }
-                    set_readonly(&target_path, true)?;
+                if is_conflict(relative) {
+                    continue; // Skip copying the file to avoid overwriting existing files in the destination.
                 }
+
+                match copy_decision(relative, src, &dst) {
+                    CopyingDecision::DontCopy => {
+                        if target_path.exists() {
+                            fs::remove_file(&target_path)?
+                        }
+                        continue;
+                    }
+                    CopyingDecision::Ignore => continue,
+                    CopyingDecision::Passthrough =>
+                        if gen_symbolic_link(path, &target_path).is_err() { // Try to create a symbolic link first. If it fails, copy the file instead.
+                            fs::copy(path, &target_path)
+                                .with_context(|| format!("Failed to copy {:?}", path))?;
+                        },
+                    CopyingDecision::TextRewriting(new_content) =>
+                        fs::write(&target_path, new_content)
+                            .with_context(|| format!("Failed to write {:?}", target_path))?
+                }
+                set_readonly(&target_path, true)?;
             }
         }
         Ok(())
