@@ -36,8 +36,8 @@ fn gen_symbolic_link(src: &Path, dst: &Path) -> Result<()> {
     if dst.exists() {
         fs::remove_file(dst)?;
     }
-    let src = src.canonicalize()?;
-    let dst = dst.canonicalize()?;
+    let src = std::path::absolute(src)?;
+    let dst = std::path::absolute(dst)?;
     #[cfg(unix)]
     std::os::unix::fs::symlink(src, dst)?;
     #[cfg(windows)]
