@@ -9,7 +9,7 @@ mod cargo_toml;
 mod project_clone;
 /// Chip configuration dictionary
 mod chip_dic;
-mod analyze_def_use;
+mod unused_analysis;
 
 const GEN_DIR: &str = "generated";
 
@@ -55,11 +55,8 @@ impl Config {
             None => self.get_destination_path().clone()
         }
     }
-    fn get_destination_lp_full(&self) -> PathBuf {
-        self.get_destination_path().join(self.get_gen_double("lp"))
-    }
-    fn get_destination_main_full(&self) -> PathBuf {
-        self.get_destination_path().join(self.get_gen_double("main"))
+    fn get_destination_full<S: AsRef<str>>(&self, proc_name: S) -> PathBuf {
+        self.get_destination_path().join(self.get_gen_double(proc_name))
     }
     fn get_gen_double<S: AsRef<str>>(&self, proc_name: S) -> PathBuf {
         match &*self.template_name.borrow() {
@@ -127,7 +124,7 @@ fn cmd_debug(config: &Config) -> Result<()> {
     let cargo_toml_data = cargo_toml::CargoToml::new(config.manifest.join("Cargo.toml"))?;
     let features = cargo_toml_data.get_build_config(&config.build_name)
         .ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?.lp_params.features.clone().unwrap_or_else(|| "".to_string());
-    analyze_def_use::analyze_def_use(&config.manifest, if features.is_empty() {"is-lp-core".to_owned()} else {features + ",is-lp-core"})?;
+    unused_analysis::analyze_unused(&config.manifest, if features.is_empty() {"is-lp-core".to_owned()} else {features + ",is-lp-core"}, Some("__risc_v_rt__main"))?;
     Ok(())
 }
 
@@ -143,8 +140,25 @@ fn cmd_gen(config: &Config, cargo_toml: bool) -> Result<cargo_toml::CargoToml> {
         println!("LP Cargo.toml:\n{}", cargo_toml_data.generate_lp_file(&config.manifest)?);
         return Ok(cargo_toml_data);
     }
-    gen_main_project(&config, &cargo_toml_data)?;
-    gen_lp_project(&config, &cargo_toml_data)?;
+    let features = cargo_toml_data.get_build_config(&config.build_name)
+        .ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?.lp_params.features.clone().unwrap_or_else(|| "".to_string());
+    fn append_feature<S: AsRef<str>>(features:&String, new_feature: S) -> String{
+        if features.is_empty() {
+            new_feature.as_ref().to_string()
+        } else {
+            features.clone() + "," + new_feature.as_ref()
+        }
+    }
+    let (unused_analysis_result_lp, unused_analysis_result_main) = if cargo_toml_data.enable_unused_elimination {
+        (
+            unused_analysis::analyze_unused(&config.manifest, append_feature(&features, "is-lp-core"), Some("__risc_v_rt__main")).ok(),
+            unused_analysis::analyze_unused(&config.manifest, append_feature(&features, "has-lp-core"), None::<&str>).ok()
+        )
+    } else {
+        (None, None)
+    };
+    gen_project(&config, &cargo_toml_data, ProcKind::Main, unused_analysis_result_main)?;
+    gen_project(&config, &cargo_toml_data, ProcKind::Lp, unused_analysis_result_lp)?;
     println!("Full project clone completed.");
     Ok(cargo_toml_data)
 }
@@ -169,7 +183,7 @@ fn gen_args<S: AsRef<str>>(command : S, build_parameter : &BuildParameter, relea
 
 /// Execute cargo for the LP project.
 fn build_lp(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>) -> Result<()> {
-    let lp_path = config.get_destination_lp_full();
+    let lp_path = config.get_destination_full("lp");
     vprintln!(config, "LP project path: {}", lp_path.display());
     if !lp_path.exists() {
         return Err(anyhow::anyhow!("LP project not found at {}", lp_path.display()));
@@ -190,7 +204,7 @@ fn build_lp(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &st
 
 /// Execute cargo for the main project.
 fn impl_cargo_exec_main(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>, cmd : &str) -> Result<()> {
-    let main_path = config.get_destination_main_full();
+    let main_path = config.get_destination_full("main");
     vprintln!(config, "Main project path: {}", main_path.display());
     if !main_path.exists() {
         return Err(anyhow::anyhow!("Main project not found at {}", main_path.display()));
@@ -254,7 +268,7 @@ fn cmd_run(config: &Config) -> Result<cargo_toml::CargoToml> {
     Ok(cargo_toml)
 }
 
-fn dont_delete_main(_path: &Path, _src: &Path, _dst: &Path) -> bool {
+fn dont_delete(_path: &Path, _src: &Path, _dst: &Path) -> bool {
     false
 }
 
@@ -262,28 +276,41 @@ fn get_template_path(base_path: &Path) -> PathBuf {
     base_path.join("template")
 }
 
-fn gen_main_project(
-    config: &Config, cargo_toml: &cargo_toml::CargoToml,
-) -> Result<()> {
-    project_clone::clone_project(&config.manifest, &config.get_destination_path(), &config.get_gen_double("main"),
-        &get_template_path(&config.manifest), &config.get_gen_double("main"),
-        dont_delete_main, copy_decision_default)?;
-    let main_cargo_toml = cargo_toml.generate_main_file(&config.manifest)?.to_string();
-    fs::write(&config.get_destination_main_full().join("Cargo.toml"), main_cargo_toml)?;
-    Ok(())
+enum ProcKind {
+    Main,
+    Lp
 }
 
-fn dont_delete_lp(_path: &Path, _src: &Path, _dst: &Path) -> bool {
-    false
-}
-
-fn gen_lp_project(
-    config: &Config, cargo_toml: &cargo_toml::CargoToml,
-) -> Result<()> {
-    project_clone::clone_project(&config.manifest, &config.get_destination_path(), &config.get_gen_double("lp"),
-        &get_template_path(&config.manifest), &config.get_gen_double("lp"),
-        dont_delete_lp, copy_decision_default)?;
-    let lp_cargo_toml = cargo_toml.generate_lp_file(&config.manifest)?.to_string();
-    fs::write(&config.get_destination_lp_full().join("Cargo.toml"), lp_cargo_toml)?;
+fn gen_project(config: &Config, cargo_toml: &cargo_toml::CargoToml, proc : ProcKind, unused_analysis_result: Option<unused_analysis::UnusedAnalysisResult>) -> Result<()> {
+    let proc_name = match proc {
+        ProcKind::Main => "main",
+        ProcKind::Lp => "lp"
+    };
+    if let Some(uar) = unused_analysis_result.as_ref() {
+        let copy_decision = |path: &Path, src: &Path, dst: &Path| -> project_clone::CopyingDecision {
+            if let Ok(canon) = src.join(path).canonicalize() {
+                if let Some(disabled_content) = uar.get_disabled_content(canon) {
+                    project_clone::CopyingDecision::TextRewriting(disabled_content)
+                } else {
+                    copy_decision_default(path, src, dst)
+                }
+            } else {
+                println!("Failed to canonicalize path!! This is a bug!: {}", src.join(path).into_string().unwrap_or_else(|_| "Invalid UTF-8 path".to_string()));
+                copy_decision_default(path, src, dst)
+            }
+        };
+        project_clone::clone_project(&config.manifest, &config.get_destination_path(), &config.get_gen_double(proc_name),
+            &get_template_path(&config.manifest), &config.get_gen_double(proc_name),
+            &dont_delete, &copy_decision)?;
+    } else {
+        project_clone::clone_project(&config.manifest, &config.get_destination_path(), &config.get_gen_double(proc_name),
+            &get_template_path(&config.manifest), &config.get_gen_double(proc_name),
+            &dont_delete, &copy_decision_default)?;
+    }
+    let main_cargo_toml = match proc {
+        ProcKind::Main => cargo_toml.generate_main_file(&config.manifest)?.to_string(),
+        ProcKind::Lp => cargo_toml.generate_lp_file(&config.manifest)?.to_string(),
+    };
+    fs::write(&config.get_destination_full(proc_name).join("Cargo.toml"), main_cargo_toml)?;
     Ok(())
 }
