@@ -52,14 +52,6 @@ fn requires_update(src: &Path, dst: &Path) -> Result<bool> {
     }
     let src_metadata = fs::metadata(src)?;
     let dst_metadata = fs::metadata(dst)?;
-    if dst_metadata.is_symlink() {
-        let symlink_target = fs::read_link(dst)?;
-        let src_canon = src.canonicalize()?;
-        let target_canon = symlink_target.canonicalize()?;
-        if src_canon == target_canon {
-            return Ok(false);
-        }
-    }
     Ok(src_metadata.modified()? > dst_metadata.modified()?)
 }
 
@@ -156,12 +148,16 @@ pub fn clone_project<F1 : Fn(&Path, &Path, &Path) -> bool + ?Sized, F2: Fn(&Path
                                 .with_context(|| format!("Failed to copy {:?}", path))?;
                         },
                     CopyingDecision::TextRewriting(new_content) => {
-                        if set_readonly(&target_path, false).is_err() { // Make the file writable before writing.
-                            fs::remove_file(&target_path)?;
+                        if target_path.exists() {
+                            let md = target_path.symlink_metadata()?;
+                            if md.is_symlink() ||  // Remove if the target is a symbolic link.
+                                set_readonly(&target_path, false).is_err() { // Make the file writable before writing.
+                                    println!("Removing file {:?}", target_path);
+                                fs::remove_file(&target_path)?; 
+                            }
                         }
                         fs::write(&target_path, new_content)
                             .with_context(|| format!("Failed to write {:?}", target_path))?
-                            
                     }
                 }
                 set_readonly(&target_path, true)?;
