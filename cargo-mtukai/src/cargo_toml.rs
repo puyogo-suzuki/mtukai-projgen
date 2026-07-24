@@ -43,6 +43,8 @@ pub struct CargoToml {
     doc: DocumentMut,
     /// Crate name
     name: String,
+    /// Unused elimination flag. If true, the unused code will be eliminated during the build process.
+    pub enable_unused_elimination: bool,
     /// Build configurations defined in Cargo.toml
     /// The build configurations are defined in the `[[package.metadata.mtukai.build]]` section of Cargo.toml.
     build_configs: Vec<BuildConfig>,
@@ -56,8 +58,9 @@ impl CargoToml {
         let content = std::fs::read_to_string(path)?;
         let doc : DocumentMut = content.parse()?;
         let name = doc["package"]["name"].as_str().context("Name is missing")?.to_string();
+        let enable_unused_elimination = doc["package"]["metadata"]["mtukai"]["unused_elimination"].as_bool().unwrap_or(false);
         let build_configs = Self::read_build_configs(&doc)?;
-        Ok(CargoToml { doc, name, build_configs })
+        Ok(CargoToml { doc, name, enable_unused_elimination, build_configs })
     }
 
     /// Get the build configuration by name.
