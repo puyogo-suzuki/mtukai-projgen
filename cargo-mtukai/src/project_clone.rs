@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::fs;
 use walkdir::WalkDir;
@@ -86,7 +85,7 @@ fn set_readonly(path: &Path, readonly: bool) -> Result<()> {
 /// This function does not delete/copy `$dst/Cargo.toml`, `$dst/Cargo.lock`, and `$dst/target`.
 /// ### Deletion
 /// This 
-pub fn clone_project(src: &Path, dst_origin: &Path, dst_after: &Path, template_origin: &Path, template_after: &Path,  dont_delete : fn(&Path, &Path, &Path) -> bool, copy_decision : fn(&Path, &Path, &Path) -> CopyingDecision) -> Result<()> {
+pub fn clone_project<F1 : Fn(&Path, &Path, &Path) -> bool + ?Sized, F2: Fn(&Path, &Path, &Path) -> CopyingDecision + ?Sized>(src: &Path, dst_origin: &Path, dst_after: &Path, template_origin: &Path, template_after: &Path,  dont_delete : &F1, copy_decision : &F2) -> Result<()> {
     let template_src_path = template_origin.join(template_after);
     let dst = dst_origin.join(dst_after);
     let blacklist = [dst.join("Cargo.toml"), dst.join("Cargo.lock"), dst.join("target")];
@@ -156,9 +155,14 @@ pub fn clone_project(src: &Path, dst_origin: &Path, dst_after: &Path, template_o
                             fs::copy(path, &target_path)
                                 .with_context(|| format!("Failed to copy {:?}", path))?;
                         },
-                    CopyingDecision::TextRewriting(new_content) =>
+                    CopyingDecision::TextRewriting(new_content) => {
+                        if set_readonly(&target_path, false).is_err() { // Make the file writable before writing.
+                            fs::remove_file(&target_path)?;
+                        }
                         fs::write(&target_path, new_content)
                             .with_context(|| format!("Failed to write {:?}", target_path))?
+                            
+                    }
                 }
                 set_readonly(&target_path, true)?;
             }
