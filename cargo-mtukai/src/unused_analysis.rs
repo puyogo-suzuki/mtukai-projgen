@@ -219,16 +219,16 @@ pub struct UnusedAnalysisResult {
 }
 
 impl UnusedAnalysisResult {
-    pub fn get_disabled_content<P: AsRef<Path>>(&self, path: P) -> Option<String> {
+    pub fn get_disabled_content<P: AsRef<Path>, S: AsRef<str>>(&self, path: P, cfg_feature: S) -> Option<String> {
         let ranges = self.disable_range.get(path.as_ref())?;
         let src = std::fs::read_to_string(path.as_ref()).ok()?;
-        let mut result = String::with_capacity(src.len() + 8*ranges.len());
+        let cfg_str = format!("#[cfg(not(feature=\"{}\"))]\n", cfg_feature.as_ref());
+        let mut result = String::with_capacity(src.len() + cfg_str.len() * ranges.len());
         let mut itr = 0;
         for r in ranges.iter() {
             result.push_str(&src[itr..r.start().into()]);
-            result.push_str("/*\n");
+            result.push_str(&cfg_str);
             result.push_str(&src[*r]);
-            result.push_str("\n*/\n");
             itr = r.end().into();
         }
         if itr < src.len() {

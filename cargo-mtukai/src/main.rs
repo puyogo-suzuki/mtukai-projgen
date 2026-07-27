@@ -286,10 +286,14 @@ fn gen_project(config: &Config, cargo_toml: &cargo_toml::CargoToml, proc : ProcK
         ProcKind::Main => "main",
         ProcKind::Lp => "lp"
     };
+    let feature_name = match proc {
+        ProcKind::Main => "has-lp-core",
+        ProcKind::Lp => "is-lp-core"
+    };
     if let Some(uar) = unused_analysis_result.as_ref() {
         let copy_decision = |path: &Path, src: &Path, dst: &Path| -> project_clone::CopyingDecision {
             if let Ok(canon) = src.join(path).canonicalize() {
-                if let Some(disabled_content) = uar.get_disabled_content(canon) {
+                if let Some(disabled_content) = uar.get_disabled_content(canon, feature_name) {
                     project_clone::CopyingDecision::TextRewriting(disabled_content)
                 } else {
                     copy_decision_default(path, src, dst)
