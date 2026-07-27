@@ -532,7 +532,9 @@ fn walk_dependency(collect: &mut HirCollect, db: &RootDatabase) {
     }
     while let Some(f) = walkqueue.pop() {
         if let Some(b) = sema.source(f) {
-            for expr in b.value.syntax().descendants().filter_map(ast::CallableExpr::cast) {
+            let syntax = b.value.syntax();
+            // Function Calling
+            for expr in syntax.descendants().filter_map(ast::CallableExpr::cast) {
                 match expr {
                     ast::CallableExpr::Call(call) => {
                         if let Some(callable) = call.expr()
@@ -553,6 +555,14 @@ fn walk_dependency(collect: &mut HirCollect, db: &RootDatabase) {
                         } else {
                         }
                     }
+                }
+            }
+            // Higher-order function
+            for pr in syntax.descendants()
+                .filter_map(ast::PathExpr::cast)
+                .filter_map(|path_expr| path_expr.path().and_then(|path| sema.resolve_path(&path))) {
+                if let ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Function(resolved)) = pr {
+                    queue_function(db, resolved, collect, &mut walkqueue);
                 }
             }
         }
