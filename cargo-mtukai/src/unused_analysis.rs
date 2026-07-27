@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Debug, path::{Path, PathBuf}};
+use std::{cell::Cell, collections::HashMap, fmt::Debug, path::{Path, PathBuf}};
 
 use anyhow::{Context, Result};
 use ra_ap_ide::{RootDatabase, Semantics, TextRange};
@@ -178,29 +178,31 @@ pub fn analyze_unused<S: AsRef<str>, S1: AsRef<str>>(manifest_path: &Path, featu
 
 #[derive(Debug)]
 struct VisitInfo {
-    visited : bool,
+    visited : Cell<bool>,
     force_visited : bool,
 }
 
 impl VisitInfo {
     fn force_visited() -> Self {
         Self {
-            visited : false,
+            visited : Cell::new(false),
             force_visited : true
         }
     }
     fn new(force_visited : bool) -> Self {
         Self {
-            visited : false,
+            visited : Cell::new(false),
             force_visited
         }
     }
 
-    fn visited(&mut self) {
-        self.visited = true;
+    fn visit(&self) -> bool {
+        let ret = self.is_visited();
+        self.visited.set(true);
+        ret
     }
     fn is_visited(&self) -> bool {
-        self.visited
+        self.visited.get() || self.force_visited
     }
 }
 
@@ -477,31 +479,27 @@ fn check_used_functions_in_ast(hircollect: &HirCollect, ast_collect: &mut AstCol
     }
 }
 
-fn walk_dependency(collect: &mut HirCollect, db: &RootDatabase) {
+fn walk_dependency(collect: &HirCollect, db: &RootDatabase) {
     let mut walkqueue = Vec::<ra_ap_hir::Function>::new();
-    for (f, val) in collect.functions.iter_mut().filter(|(_, v)| v.force_visited){
+    for (f, val) in collect.functions.iter().filter(|(_, v)| v.force_visited){
         walkqueue.push(f.clone());
-        val.visited();
+        val.visit();
     }
     let sema = Semantics::new(db);
-    fn queue_function(db: &RootDatabase, f: ra_ap_hir::Function, collect: &mut HirCollect, walkqueue: &mut Vec<ra_ap_hir::Function>) {
-        fn require_visit(f: &ra_ap_hir::Function, collect: &mut HirCollect) -> bool {
-            if let Some(is_visited) = collect.functions.get_mut(f) {
-                let ret = !is_visited.is_visited();
-                is_visited.visited();
-                ret
+    fn queue_function(db: &RootDatabase, f: ra_ap_hir::Function, collect: &HirCollect, walkqueue: &mut Vec<ra_ap_hir::Function>) {
+        fn require_visit(f: &ra_ap_hir::Function, collect: &HirCollect) -> bool {
+            if let Some(is_visited) = collect.functions.get(f) {
+                !is_visited.visit()
             } else {
                 false
             }
         }
-        fn visit_all_trait_implementers(db: &RootDatabase, function_name: &ra_ap_hir::Name, trait_: &ra_ap_hir::Trait, collect: &mut HirCollect, walkqueue: &mut Vec<ra_ap_hir::Function>) {
+        fn visit_all_trait_implementers(db: &RootDatabase, function_name: &ra_ap_hir::Name, trait_: &ra_ap_hir::Trait, collect: &HirCollect, walkqueue: &mut Vec<ra_ap_hir::Function>) {
             for imp in ra_ap_hir::Impl::all_for_trait(db, *trait_).into_iter() {
                 for item in imp.items(db).iter() {
                     if let ra_ap_hir::AssocItem::Function(func) = item
-                    && &func.name(db) == function_name {
-                        if require_visit(&func, collect) {
-                            walkqueue.push(func.clone());
-                        }
+                            && &func.name(db) == function_name && require_visit(&func, collect) {
+                        walkqueue.push(func.clone());
                     }
                 }
             }
@@ -530,43 +528,61 @@ fn walk_dependency(collect: &mut HirCollect, db: &RootDatabase) {
             walkqueue.push(f.clone());
         }
     }
-    while let Some(f) = walkqueue.pop() {
-        if let Some(b) = sema.source(f) {
-            let syntax = b.value.syntax();
-            // Function Calling
-            for expr in syntax.descendants().filter_map(ast::CallableExpr::cast) {
-                match expr {
-                    ast::CallableExpr::Call(call) => {
-                        if let Some(callable) = call.expr()
-                            .and_then(|expr| sema.type_of_expr(&expr)) // Failure of inferring means the called function is not defined in user's crate.
-                            .and_then(|ty| ty.adjusted().as_callable(db)) { // The fialure means that it is not callable.
-                            if let ra_ap_hir::CallableKind::Function(resolved) = callable.kind() {
-                                // Check only if it is function.
-                                // Because: 
-                                //  - TupleStruct and TupleEnumVariant are compiler intrinsics.
-                                //  - The callees of the Closure, FnPtr, FnImpl are collected on the defined place.
-                                queue_function(db, resolved.clone(), collect, &mut walkqueue);
-                            }
-                        }
-                    }
-                    ast::CallableExpr::MethodCall(call) => {
-                        if let Some(resolved) = sema.resolve_method_call(&call) {
-                            queue_function(db, resolved.clone(), collect, &mut walkqueue);
-                        } else {
+    fn scan_syntax_for_functions(
+        db: &RootDatabase,
+        syntax: &ra_ap_syntax::SyntaxNode,
+        collect: &HirCollect,
+        walkqueue: &mut Vec<ra_ap_hir::Function>,
+        sema: &Semantics<RootDatabase>,
+    ) {
+        for expr in syntax.descendants().filter_map(ast::CallableExpr::cast) {
+            match expr {
+                ast::CallableExpr::Call(call) => {
+                    if let Some(callable) = call.expr()
+                        .and_then(|expr| sema.type_of_expr(&expr)) // Failure of inferring means the called function is not defined in user's crate.
+                        .and_then(|ty| ty.adjusted().as_callable(db)) { // The fialure means that it is not callable.
+                        if let ra_ap_hir::CallableKind::Function(resolved) = callable.kind() {
+                            // Check only if it is function.
+                            // Because: 
+                            //  - TupleStruct and TupleEnumVariant are compiler intrinsics.
+                            //  - The callees of the Closure, FnPtr, FnImpl are collected on the defined place.
+                            queue_function(db, resolved.clone(), collect, walkqueue);
                         }
                     }
                 }
-            }
-            // Higher-order function
-            for pr in syntax.descendants()
-                .filter_map(ast::PathExpr::cast)
-                .filter_map(|path_expr| path_expr.path().and_then(|path| sema.resolve_path(&path))) {
-                if let ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Function(resolved)) = pr {
-                    queue_function(db, resolved, collect, &mut walkqueue);
+                ast::CallableExpr::MethodCall(call) => {
+                    if let Some(resolved) = sema.resolve_method_call(&call) {
+                        queue_function(db, resolved.clone(), collect, walkqueue);
+                    }
                 }
             }
         }
+        // Higher-order function
+        for pr in syntax.descendants()
+            .filter_map(ast::PathExpr::cast)
+            .filter_map(|path_expr| path_expr.path().and_then(|path| sema.resolve_path(&path))) {
+            if let ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Function(resolved)) = pr {
+                queue_function(db, resolved, collect, walkqueue);
+            }
+        }
+    }
 
+    // Scan initializers of consts and statics
+    for c in collect.consts.keys() {
+        if let Some(body) = sema.source(*c).and_then(|s| s.value.body()) {
+            scan_syntax_for_functions(db, body.syntax(), collect, &mut walkqueue, &sema);
+        }
+    }
+    for st in collect.statics.keys() {
+        if let Some(body) = sema.source(*st).and_then(|s| s.value.body()) {
+            scan_syntax_for_functions(db, body.syntax(), collect, &mut walkqueue, &sema);
+        }
+    }
+
+    while let Some(f) = walkqueue.pop() {
+        if let Some(b) = sema.source(f) {
+            scan_syntax_for_functions(db, b.value.syntax(), collect, &mut walkqueue, &sema);
+        }
     }
 }
 
