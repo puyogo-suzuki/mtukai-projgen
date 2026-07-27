@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Debug, hash::Hash, path::{Path, PathBuf}};
+use std::{collections::HashMap, fmt::Debug, path::{Path, PathBuf}};
 
 use anyhow::{Context, Result};
 use ra_ap_ide::{RootDatabase, Semantics, TextRange};
@@ -6,8 +6,8 @@ use ra_ap_load_cargo::{load_workspace_at, LoadCargoConfig, ProcMacroServerChoice
 use ra_ap_project_model::{CargoConfig, CargoFeatures};
 use ra_ap_vfs::{VfsPath, Vfs};
 use ra_ap_base_db::{SourceDatabase};
-use ra_ap_hir::{AsAssocItem, Crate, HasSource};
-use ra_ap_syntax::ast::{self, AstNode, HasModuleItem, HasName};
+use ra_ap_hir::{AsAssocItem, Crate};
+use ra_ap_syntax::ast::{self, AstNode, HasAttrs, HasModuleItem, HasName};
 
 // fn textrange_to_line_column<S: AsRef<str>, T: AsRef<str>>(path_str: S, txt : T, range: ra_ap_ide::TextRange) -> String {
 //     let start_line_col = txt.as_ref()[..<usize>::from(range.start())].lines().count();
@@ -141,10 +141,10 @@ pub fn analyze_unused<S: AsRef<str>, S1: AsRef<str>>(manifest_path: &Path, featu
     check_used_functions_in_ast(&hircollect, &mut ast_collect, &root_db);
 
     // for (file_id, fi) in ast_collect.files.iter() {
-    //     for (loc, (f, visit)) in fi.functions.iter() {
+    //     for (_, (f, visit)) in fi.functions.iter() {
     //         let path = vfs.file_path(*file_id).as_path().map(|v| v.to_string()).unwrap_or_default();
     //         let txt = root_db.file_text(*file_id).text(&root_db);
-    //         println!("function {} at {:?} is {:?}", f.name().map(|n| n.text().to_string()).unwrap_or_else(|| "<unnamed>".to_string()), textrange_to_line_column(path, txt, *loc.text_range()), visit);
+    //         println!("function {} at {:?} is {:?}", f.name().map(|n| n.text().to_string()).unwrap_or_else(|| "<unnamed>".to_string()), textrange_to_line_column(path, txt, f.syntax().text_range()), visit);
     //     }
     // }
 
@@ -211,46 +211,6 @@ enum AstVisitInfo {
     Visited
 }
 
-#[derive(Debug, Clone)]
-struct RoughTextRange {
-    raw: TextRange
-}
-impl RoughTextRange {
-    // pub fn text_range(&self) -> &TextRange {
-    //     &self.raw
-    // }
-    // pub fn text_range_mut(&mut self) -> &mut TextRange {
-    //     &mut self.raw
-    // }
-    pub fn new(raw: TextRange) -> Self {
-        Self { raw }
-    }
-}
-impl Into<TextRange> for RoughTextRange {
-    fn into(self) -> TextRange {
-        self.raw
-    }
-}
-impl From<TextRange> for RoughTextRange {
-    fn from(raw: TextRange) -> Self {
-        Self { raw }
-    }
-}
-
-impl Hash for RoughTextRange {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.raw.start().hash(state);
-        self.raw.end().hash(state);
-    }
-}
-impl PartialEq for RoughTextRange {
-    fn eq(&self, other: &Self) -> bool {
-        // Returns true if the ranges overlap
-        self.raw.start() < other.raw.end() && other.raw.start() < self.raw.end()
-    }
-}
-impl Eq for RoughTextRange {}
-
 pub struct UnusedAnalysisResult {
     /// Ranges to be disabled.
     disable_range : HashMap<PathBuf, Vec<TextRange>>
@@ -276,9 +236,37 @@ impl UnusedAnalysisResult {
     }
 }
 
+fn get_ast_fn_key(func: &ast::Fn) -> String {
+    let fn_name = func.name().map(|n| n.text().to_string()).unwrap_or_else(|| "<unnamed>".to_string());
+    let mut parts = Vec::new();
+    
+    let mut current = func.syntax().parent();
+    while let Some(node) = current {
+        if let Some(impl_) = ast::Impl::cast(node.clone()) {
+            let mut thispart = "impl:".to_string();
+            let self_ty = impl_.self_ty().map(|t| t.syntax().text().to_string().replace([' ', '\n', '\r', '\t'], "")).unwrap_or_default();
+            if let Some(tr) = impl_.trait_().map(|t| t.syntax().text().to_string().replace([' ', '\n', '\r', '\t'], "")) {
+                thispart.push_str(&tr);
+                thispart.push_str("for");
+            }
+            thispart.push_str(&self_ty);
+            parts.push(thispart);
+        } else if let Some(tr) = ast::Trait::cast(node.clone()) {
+            parts.push(format!("trait:{}", tr.name().map(|n| n.text().to_string()).unwrap_or_default()));
+        } else if let Some(m) = ast::Module::cast(node.clone()) {
+            parts.push(format!("mod:{}", m.name().map(|n| n.text().to_string()).unwrap_or_default()));
+        }
+        current = node.parent();
+    }
+    
+    parts.reverse();
+    parts.push(format!("fn:{}", fn_name));
+    parts.join("::")
+}
+
 #[derive(Debug)]
 struct AstCollectFile {
-    functions: HashMap<RoughTextRange, (ra_ap_syntax::ast::Fn, AstVisitInfo)>
+    functions: HashMap<String, (ra_ap_syntax::ast::Fn, AstVisitInfo)>
 }
 
 #[derive(Debug)]
@@ -292,40 +280,41 @@ impl AstCollect {
             files: HashMap::new()
         }
     }
-    fn insert_function(&mut self, file_id: ra_ap_vfs::FileId, loc: TextRange, func: ra_ap_syntax::ast::Fn, visit: AstVisitInfo) {
+    fn insert_function(&mut self, file_id: ra_ap_vfs::FileId, func: ra_ap_syntax::ast::Fn, visit: AstVisitInfo) {
+        let key = get_ast_fn_key(&func);
         let file_entry = self.files.entry(file_id).or_insert_with(|| AstCollectFile { functions: HashMap::new() });
-        file_entry.functions.insert(RoughTextRange::new(loc), (func, visit));
+        file_entry.functions.insert(key, (func, visit));
     }
-    // fn get_visit_info(&mut self, file_id: ra_ap_vfs::FileId, loc: TextRange) -> Option<&mut AstVisitInfo> {
-    //     if let Some(file_entry) = self.files.get_mut(&file_id) {
-    //         file_entry.functions.get_mut(&RoughTextRange::new(loc)).map(|(_, visit)| visit)
-    //     } else {
-    //         None
-    //     }
+    // fn get_visit_info(&mut self, file_id: ra_ap_vfs::FileId, key: &str) -> Option<&mut AstVisitInfo> {
+    //     self.get_function_info.and_then(|&mut (func, visit)| Some(visit))
     // }
-    fn get_function_info(&mut self, file_id: ra_ap_vfs::FileId, loc: TextRange) -> Option<&mut (ra_ap_syntax::ast::Fn, AstVisitInfo)> {
-        if let Some(file_entry) = self.files.get_mut(&file_id) {
-            file_entry.functions.get_mut(&RoughTextRange::new(loc))
-        } else {
-            None
-        }
+    fn get_function_info<S: AsRef<str>>(&mut self, file_id: ra_ap_vfs::FileId, key: S) -> Option<&mut (ra_ap_syntax::ast::Fn, AstVisitInfo)> {
+        self.files.get_mut(&file_id).and_then(|file_entry| file_entry.functions.get_mut(key.as_ref()))
     }
     fn collect_from_file(&mut self, file_id : &ra_ap_vfs::FileId, db : &RootDatabase, root_krate : &Crate) {
         let text = db.file_text(file_id.clone()).text(db);
         let parse = ra_ap_syntax::SourceFile::parse(&text, root_krate.edition(db));
         let file = parse.tree();
+
+        fn has_panic_handler(func: &ast::Fn) -> bool {
+            func.attrs().any(|attr| {
+                attr.path().map(|p| p.syntax().text().to_string() == "panic_handler").unwrap_or(false)
+            })
+        }
             
         for item in file.items() {
             match item {
                 ast::Item::Fn(func) => {
-                    self.insert_function(file_id.clone(), func.syntax().text_range(), func.clone(), AstVisitInfo::None);
+                    let visit = if has_panic_handler(&func) { AstVisitInfo::Visited } else { AstVisitInfo::None };
+                    self.insert_function(file_id.clone(), func.clone(), visit);
                 }
                 ast::Item::Impl(impl_) => {
                     // functions inside impl block
                     if let Some(assoc_item_list) = impl_.assoc_item_list() {
                         for assoc_item in assoc_item_list.assoc_items() {
                             if let ast::AssocItem::Fn(func) = assoc_item {
-                                self.insert_function(file_id.clone(), func.syntax().text_range(), func.clone(), AstVisitInfo::None);
+                                let visit = if has_panic_handler(&func) { AstVisitInfo::Visited } else { AstVisitInfo::None };
+                                self.insert_function(file_id.clone(), func.clone(), visit);
                             }
                         }
                     }
@@ -336,7 +325,8 @@ impl AstCollect {
                         for assoc_item in assoc_item_list.assoc_items() {  
                             if let ast::AssocItem::Fn(func) = assoc_item {
                                 if func.body().is_some() {
-                                    self.insert_function(file_id.clone(), func.syntax().text_range(), func.clone(), AstVisitInfo::None);
+                                    let visit = if has_panic_handler(&func) { AstVisitInfo::Visited } else { AstVisitInfo::None };
+                                    self.insert_function(file_id.clone(), func.clone(), visit);
                                 }
                             }
                         }
@@ -354,9 +344,9 @@ impl AstCollect {
                 vfs.file_path(file_id).as_path().map(|v| v.to_path_buf()).and_then(|p| Some((p, file_entry)))
             ) {
             let mut ranges: Vec<TextRange> = file_entry.functions.into_iter()
-                .filter_map(|(rough_range, (_, visit))| {
+                .filter_map(|(_, (func, visit))| {
                     if let AstVisitInfo::Unused = visit {
-                        Some(rough_range.raw)
+                        Some(func.syntax().text_range())
                     } else {
                         None
                     }
@@ -458,18 +448,22 @@ impl HirCollect {
 }
 
 fn check_used_functions_in_ast(hircollect: &HirCollect, ast_collect: &mut AstCollect, db: &RootDatabase) {
-    for (f, source_with_range, visit) in hircollect.functions.iter()
-        .filter_map(|(f, vi)| f.source_with_range(db).and_then(|swr| Some((f, swr, vi)))) {
-        let (file, range) = if let Some(mf) = source_with_range.file_id.macro_file() {
-            let loc = mf.loc(db);
-            let call_range =  loc.kind.original_call_range_with_input(db);
-            (call_range.file_id.file_id(db), call_range.range)
-        } else {
-            (source_with_range.file_id.original_file(db).file_id(db), source_with_range.value.0)
-        };
-        if let Some(vis) = ast_collect.get_function_info(file, range) {
-            // println!("hir function {} -> ast function {} is {:?}", f.name(db).display(db, ra_ap_ide::Edition::Edition2024), vis.0.name().map(|n| n.text().to_string()).unwrap_or_else(|| "<unnamed>".to_string()), if visit.is_visited() { "visited" } else { "unused" });
-            vis.1 = if visit.is_visited() { AstVisitInfo::Visited } else { AstVisitInfo::Unused };
+    let sema = Semantics::new(db);
+    for (f, visit) in hircollect.functions.iter() {
+        if let Some(source) = sema.source(f.clone()) {
+            let file_id = if let Some(mf) = source.file_id.macro_file() {
+                mf.loc(db).kind.original_call_range_with_input(db).file_id.file_id(db)
+            } else {
+                source.file_id.original_file(db).file_id(db)
+            };
+            if let Some(vis) = ast_collect.get_function_info(file_id, &get_ast_fn_key(&source.value)) {
+                // println!("hir function {} -> ast function {} is {:?}", f.name(db).display(db, ra_ap_ide::Edition::Edition2024), vis.0.name().map(|n| n.text().to_string()).unwrap_or_else(|| "<unnamed>".to_string()), if visit.is_visited() { "visited" } else { "unused" });
+                if visit.is_visited() {
+                    vis.1 = AstVisitInfo::Visited;
+                } else if matches!(vis.1, AstVisitInfo::None) {
+                    vis.1 = AstVisitInfo::Unused;
+                }
+            }
         }
     }
 }
