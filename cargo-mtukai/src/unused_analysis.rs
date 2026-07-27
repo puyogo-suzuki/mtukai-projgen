@@ -427,6 +427,15 @@ impl HirCollect {
                     }
                     ra_ap_hir::ModuleDef::Trait(t) => {
                         traits.insert(t, VisitInfo::force_visited());
+                        for item in t.items(db) {
+                            if let ra_ap_hir::AssocItem::Function(f) = item {
+                                if let Some(source) = sema.source(f.clone()) {
+                                    if source.value.body().is_some() {
+                                        functions.insert(f, VisitInfo::new(true)); // CURRENTLY
+                                    }
+                                }
+                            }
+                        }
                     }
                     _ => {}
                 }
