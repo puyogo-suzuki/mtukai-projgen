@@ -29,6 +29,19 @@ pub fn copy_decision_default(relative: &Path, src: &Path, dst: &Path) -> Copying
     }
 }
 
+pub fn write_when_updated<P: AsRef<Path>>(path: P, content: &str) -> Result<()> {
+    let path = path.as_ref();
+    if path.exists() {
+        let existing_content = fs::read_to_string(path);
+        if let Ok(existing_content) = existing_content
+            && existing_content == content {
+            return Ok(());
+        }
+    }
+    fs::write(path, content)?;
+    Ok(())
+}
+
 /// Generate a symbolic link.
 /// If any file exists on the destination, this removes the file.
 fn gen_symbolic_link(src: &Path, dst: &Path) -> Result<()> {
@@ -152,11 +165,10 @@ pub fn clone_project<F1 : Fn(&Path, &Path, &Path) -> bool + ?Sized, F2: Fn(&Path
                             let md = target_path.symlink_metadata()?;
                             if md.is_symlink() ||  // Remove if the target is a symbolic link.
                                 set_readonly(&target_path, false).is_err() { // Make the file writable before writing.
-                                    println!("Removing file {:?}", target_path);
                                 fs::remove_file(&target_path)?; 
                             }
                         }
-                        fs::write(&target_path, new_content)
+                        write_when_updated(&target_path, &new_content)
                             .with_context(|| format!("Failed to write {:?}", target_path))?
                     }
                 }
