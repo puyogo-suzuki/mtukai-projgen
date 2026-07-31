@@ -100,11 +100,11 @@ pub fn clone_project<F1 : Fn(&Path, &Path, &Path) -> bool + ?Sized, F2: Fn(&Path
         && !dont_delete(path, src, &dst) // The file is not ignored.
     };
     if dst.exists() {
-        for entry in
-            WalkDir::new(&dst)
-            .into_iter()
-            .filter_entry(file_filter) {
+        for entry in WalkDir::new(&dst).into_iter() {
             let entry = entry?; // The error seems fatal.
+            if file_filter(&entry) == false {
+                continue; // The file is ignored.
+            }
             let path = entry.path();
 
             let relative = path.strip_prefix(&dst)?; // If it throws an error, dst may a symbolic link?
@@ -112,24 +112,23 @@ pub fn clone_project<F1 : Fn(&Path, &Path, &Path) -> bool + ?Sized, F2: Fn(&Path
                 continue; // Ignored file.
             }
             if entry.file_type().is_dir() {
-                fs::remove_dir_all(path)?;
+                let _ = fs::remove_dir_all(path);
             } else {
-                fs::remove_file(path)?;
+                let _ = fs::remove_file(path);
             }
         }
     }
 
     let mut blacklist = vec![src.join("Cargo.toml"), src.join("Cargo.lock"), src.join("target"), template_origin.to_path_buf()];
     let do_clone = |src : &Path, blacklist: &Vec<PathBuf>, is_conflict : &dyn Fn(&Path) -> bool| -> Result<()> {
-        for entry in WalkDir::new(src)
-                .into_iter()
-                .filter_entry(|e| {
-                    let path = e.path();
-                    !blacklist.iter().any(|p| path.starts_with(p)) // The file is not in the blacklist.
-                    && !e.path().starts_with(dst_origin) // The file is in the destinations.
-                }) {
-            let entry = entry?;
+        for entry in WalkDir::new(src).into_iter() {
+            let entry = entry?; // The error seems fatal.
             let path = entry.path();
+
+            if blacklist.iter().any(|p| path.starts_with(p)) || path.starts_with(dst_origin) {
+                continue; // The file is in the blacklist, or the file is in the destinations.
+            }
+
             let relative = path.strip_prefix(src)?;
             let target_path = dst.join(relative);
 
