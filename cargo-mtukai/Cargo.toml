@@ -17,3 +17,6 @@ ra_ap_vfs = "0.0.340"
 ra_ap_base_db = "0.0.340"
 ra_ap_syntax = "0.0.340"
 ra_ap_hir = "0.0.340"
+
+[profile.dev]
+opt-level = 1
