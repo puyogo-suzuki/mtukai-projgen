@@ -1,4 +1,4 @@
-use std::{cell::Cell, collections::HashMap, fmt::Debug, path::{Path, PathBuf}};
+use std::{cell::Cell, collections::{HashMap, HashSet}, fmt::Debug, path::{Path, PathBuf}};
 
 use anyhow::{Context, Result};
 use ra_ap_ide::{RootDatabase, Semantics, TextRange};
@@ -213,28 +213,89 @@ enum AstVisitInfo {
     Visited
 }
 
+struct UnusedItem {
+    /// The function key
+    function_key : String,
+    /// The range of the function in the source code
+    text_range : TextRange
+}
+
+impl UnusedItem {
+    fn new(function_key: String, text_range: TextRange) -> Self {
+        Self {
+            function_key,
+            text_range
+        }
+    }
+}
+
+impl PartialEq for UnusedItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.text_range.start() == other.text_range.start()
+    }
+}
+impl Eq for UnusedItem {}
+impl PartialOrd for UnusedItem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.text_range.start().partial_cmp(&other.text_range.start())
+    }
+}
+impl Ord for UnusedItem {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.text_range.start().cmp(&other.text_range.start())
+    }
+}
+
 pub struct UnusedAnalysisResult {
     /// Ranges to be disabled.
-    disable_range : HashMap<PathBuf, Vec<TextRange>>
+    unuseds : HashMap<PathBuf, Vec<UnusedItem>>
 }
 
 impl UnusedAnalysisResult {
     pub fn get_disabled_content<P: AsRef<Path>, S: AsRef<str>>(&self, path: P, cfg_feature: S) -> Option<String> {
-        let ranges = self.disable_range.get(path.as_ref())?;
+        let items = self.unuseds.get(path.as_ref())?;
         let src = std::fs::read_to_string(path.as_ref()).ok()?;
-        let cfg_str = format!("#[cfg(not(feature=\"{}\"))]\n", cfg_feature.as_ref());
-        let mut result = String::with_capacity(src.len() + cfg_str.len() * ranges.len());
+        Some(Self::impl_disabled_content(&src, items, cfg_feature.as_ref()))
+    }
+    fn impl_disabled_content(src_text: &str, unused_items: &Vec<UnusedItem>, cfg_feature: &str) -> String {
+        let cfg_str = format!("#[cfg(not(feature=\"{}\"))]\n", cfg_feature);
+        let mut result = String::with_capacity(src_text.len() + unused_items.len() * cfg_str.len());
         let mut itr = 0;
-        for r in ranges.iter() {
-            result.push_str(&src[itr..r.start().into()]);
+        for item in unused_items.iter() {
+            let r = item.text_range;
+            result.push_str(&src_text[itr..r.start().into()]);
             result.push_str(&cfg_str);
-            result.push_str(&src[*r]);
+            result.push_str(&src_text[r]);
             itr = r.end().into();
         }
-        if itr < src.len() {
-            result.push_str(&src[itr..]);
+        if itr < src_text.len() {
+            result.push_str(&src_text[itr..]);
+        }
+        result
+    }
+
+    pub fn get_analysis_cache<P: AsRef<Path>>(&self, path: P) -> Option<String> {
+        let items = self.unuseds.get(path.as_ref())?;
+        let mut result = String::new();
+        for item in items.iter() {
+            result.push_str(item.function_key.as_ref());
+            result.push('\n');
         }
         Some(result)
+    }
+
+    pub fn get_disabled_content_by_file<P1: AsRef<Path>, P2: AsRef<Path>, S: AsRef<str>>(edition: ra_ap_syntax::Edition, path: P1, cache_path: P2, cfg_feature: S) -> Option<String> {
+        let cache = std::fs::read_to_string(cache_path.as_ref()).ok()?;
+        let unused_functions = cache.split('\n').collect::<HashSet<_>>();
+
+        let src = std::fs::read_to_string(path.as_ref()).ok()?;
+        let parse = ra_ap_syntax::SourceFile::parse(&src, edition);
+        let file = parse.tree();
+        let mut collect = AstCollectFile::new_from_file(file);
+        for (key, val) in collect.functions.iter_mut() {
+            unused_functions.contains(key.as_str()).then(|| val.1 = AstVisitInfo::Unused);
+        }
+        Some(Self::impl_disabled_content(&src, &collect.into_vec_unuseditem(), cfg_feature.as_ref()))
     }
 }
 
@@ -270,45 +331,20 @@ fn get_ast_fn_key(func: &ast::Fn) -> String {
 struct AstCollectFile {
     functions: HashMap<String, (ra_ap_syntax::ast::Fn, AstVisitInfo)>
 }
-
-#[derive(Debug)]
-struct AstCollect {
-    files : HashMap<ra_ap_vfs::FileId, AstCollectFile>,
-}
-
-impl AstCollect {
-    fn new() -> Self {
-        Self {
-            files: HashMap::new()
-        }
-    }
-    fn insert_function(&mut self, file_id: ra_ap_vfs::FileId, func: ra_ap_syntax::ast::Fn, visit: AstVisitInfo) {
-        let key = get_ast_fn_key(&func);
-        let file_entry = self.files.entry(file_id).or_insert_with(|| AstCollectFile { functions: HashMap::new() });
-        file_entry.functions.insert(key, (func, visit));
-    }
-    // fn get_visit_info(&mut self, file_id: ra_ap_vfs::FileId, key: &str) -> Option<&mut AstVisitInfo> {
-    //     self.get_function_info.and_then(|&mut (func, visit)| Some(visit))
-    // }
-    fn get_function_info<S: AsRef<str>>(&mut self, file_id: ra_ap_vfs::FileId, key: S) -> Option<&mut (ra_ap_syntax::ast::Fn, AstVisitInfo)> {
-        self.files.get_mut(&file_id).and_then(|file_entry| file_entry.functions.get_mut(key.as_ref()))
-    }
-    fn collect_from_file(&mut self, file_id : &ra_ap_vfs::FileId, db : &RootDatabase, root_krate : &Crate) {
-        let text = db.file_text(file_id.clone()).text(db);
-        let parse = ra_ap_syntax::SourceFile::parse(&text, root_krate.edition(db));
-        let file = parse.tree();
-
+impl AstCollectFile {
+    fn new_from_file(file: ra_ap_syntax::SourceFile) -> AstCollectFile {
         fn has_panic_handler(func: &ast::Fn) -> bool {
             func.attrs().any(|attr| {
                 attr.path().map(|p| p.syntax().text().to_string() == "panic_handler").unwrap_or(false)
             })
         }
-            
+
+        let mut functions = HashMap::new();
         for item in file.items() {
             match item {
                 ast::Item::Fn(func) => {
                     let visit = if has_panic_handler(&func) { AstVisitInfo::Visited } else { AstVisitInfo::None };
-                    self.insert_function(file_id.clone(), func.clone(), visit);
+                    functions.insert(get_ast_fn_key(&func), (func, visit));
                 }
                 ast::Item::Impl(impl_) => {
                     // functions inside impl block
@@ -316,7 +352,7 @@ impl AstCollect {
                         for assoc_item in assoc_item_list.assoc_items() {
                             if let ast::AssocItem::Fn(func) = assoc_item {
                                 let visit = if has_panic_handler(&func) { AstVisitInfo::Visited } else { AstVisitInfo::None };
-                                self.insert_function(file_id.clone(), func.clone(), visit);
+                                functions.insert(get_ast_fn_key(&func), (func, visit));
                             }
                         }
                     }
@@ -328,7 +364,7 @@ impl AstCollect {
                             if let ast::AssocItem::Fn(func) = assoc_item {
                                 if func.body().is_some() {
                                     let visit = if has_panic_handler(&func) { AstVisitInfo::Visited } else { AstVisitInfo::None };
-                                    self.insert_function(file_id.clone(), func.clone(), visit);
+                                    functions.insert(get_ast_fn_key(&func), (func, visit));
                                 }
                             }
                         }
@@ -337,29 +373,55 @@ impl AstCollect {
                 _ => {}  
             }  
         }  
+        AstCollectFile { functions }
+    }
+
+    fn into_vec_unuseditem(&self) -> Vec<UnusedItem> {
+        let mut ranges: Vec<UnusedItem> = self.functions.values().filter_map(|(func, visit)| {
+            if let AstVisitInfo::Unused = visit {
+                Some(UnusedItem::new(get_ast_fn_key(&func), func.syntax().text_range()))
+            } else {
+                None
+            }
+        })
+        .collect();
+        ranges.sort();
+        ranges
+    }
+}
+
+#[derive(Debug)]
+struct AstCollect {
+    files : HashMap<ra_ap_vfs::FileId, AstCollectFile>,
+}
+
+impl AstCollect {
+    fn new() -> Self {
+        Self { files: HashMap::new() }
+    }
+    fn get_function_info<S: AsRef<str>>(&mut self, file_id: ra_ap_vfs::FileId, key: S) -> Option<&mut (ra_ap_syntax::ast::Fn, AstVisitInfo)> {
+        self.files.get_mut(&file_id).and_then(|file_entry| file_entry.functions.get_mut(key.as_ref()))
+    }
+    fn collect_from_file(&mut self, file_id : &ra_ap_vfs::FileId, db : &RootDatabase, root_krate : &Crate) {
+        let text = db.file_text(file_id.clone()).text(db);
+        let parse = ra_ap_syntax::SourceFile::parse(&text, root_krate.edition(db));
+        let file = parse.tree();
+
+        self.files.insert(file_id.clone(), AstCollectFile::new_from_file(file));
     }
 
     fn into_unused_analysis_result(self, vfs: &Vfs) -> UnusedAnalysisResult {
-        let mut disable_range  = HashMap::new();
+        let mut res  = HashMap::new();
         for (path, file_entry) in self.files.into_iter()
             .filter_map(|(file_id, file_entry)|
                 vfs.file_path(file_id).as_path().map(|v| v.to_path_buf()).and_then(|p| Some((p, file_entry)))
             ) {
-            let mut ranges: Vec<TextRange> = file_entry.functions.into_iter()
-                .filter_map(|(_, (func, visit))| {
-                    if let AstVisitInfo::Unused = visit {
-                        Some(func.syntax().text_range())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            let ranges = file_entry.into_vec_unuseditem();
             if !ranges.is_empty() {
-                ranges.sort_by(|a, b| a.start().cmp(&b.start()));
-                disable_range.insert(path.into(), ranges);
+                res.insert(path.into(), ranges);
             }
         }
-        UnusedAnalysisResult { disable_range }
+        UnusedAnalysisResult { unuseds: res }
     }
 }
 

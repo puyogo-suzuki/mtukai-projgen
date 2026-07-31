@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::{cell::RefCell, fs, path::{Path, PathBuf}, process::Command};
-use crate::{cargo_toml::BuildParameter, project_clone::copy_decision_default};
+use std::{cell::RefCell, path::{Path, PathBuf}, process::Command, str::FromStr};
+use crate::{cargo_toml::BuildParameter, project_clone::{copy_decision_default, write_when_updated}};
 
 /// Cargo.toml utilities
 mod cargo_toml;
@@ -140,7 +140,13 @@ fn cmd_gen(config: &Config, cargo_toml: bool) -> Result<cargo_toml::CargoToml> {
         println!("LP Cargo.toml:\n{}", cargo_toml_data.generate_lp_file(&config.manifest)?);
         return Ok(cargo_toml_data);
     }
-    let features = cargo_toml_data.get_build_config(&config.build_name)
+    println!("Full project clone completed.");
+    gen_projects(config, &cargo_toml_data, false)?;
+    Ok(cargo_toml_data)
+}
+
+fn gen_projects(config: &Config, cargo_toml: &cargo_toml::CargoToml, enable_analysis: bool) -> Result<()>{
+    let features = cargo_toml.get_build_config(&config.build_name)
         .ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?.lp_params.features.clone().unwrap_or_else(|| "".to_string());
     fn append_feature<S: AsRef<str>>(features:&String, new_feature: S) -> String{
         if features.is_empty() {
@@ -149,7 +155,7 @@ fn cmd_gen(config: &Config, cargo_toml: bool) -> Result<cargo_toml::CargoToml> {
             features.clone() + "," + new_feature.as_ref()
         }
     }
-    let (unused_analysis_result_lp, unused_analysis_result_main) = if cargo_toml_data.enable_unused_elimination {
+    let (unused_analysis_result_lp, unused_analysis_result_main) = if enable_analysis {
         (
             unused_analysis::analyze_unused(&config.manifest, append_feature(&features, "is-lp-core"), Some("__risc_v_rt__main")).ok(),
             unused_analysis::analyze_unused(&config.manifest, append_feature(&features, "has-lp-core"), None::<&str>).ok()
@@ -157,10 +163,9 @@ fn cmd_gen(config: &Config, cargo_toml: bool) -> Result<cargo_toml::CargoToml> {
     } else {
         (None, None)
     };
-    gen_project(&config, &cargo_toml_data, ProcKind::Main, unused_analysis_result_main)?;
-    gen_project(&config, &cargo_toml_data, ProcKind::Lp, unused_analysis_result_lp)?;
-    println!("Full project clone completed.");
-    Ok(cargo_toml_data)
+    gen_project(&config, cargo_toml, ProcKind::Main, unused_analysis_result_main)?;
+    gen_project(&config, cargo_toml, ProcKind::Lp, unused_analysis_result_lp)?;
+    Ok(())
 }
 
 /// Generate arguments given for cargo.
@@ -243,33 +248,39 @@ fn get_filtered_env() -> std::collections::HashMap<String, String> {
 /// Build command
 fn cmd_build(config: &Config) -> Result<cargo_toml::CargoToml> {
     let cargo_toml = cmd_gen(config, false)?;
+    let mut project_gen_retried = !cargo_toml.enable_unused_elimination; // if unused elimination is disabled, we do not retry the project generation.
     let filtered_env = get_filtered_env();
     vprintln!(config, "Building projects in: {}", config.destination_path.display());
     let build_config = cargo_toml.get_build_config(&config.build_name).ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?;
     println!("Building LP project...");
-    build_lp(config, build_config, &filtered_env)?;
+    if build_lp(config, build_config, &filtered_env).is_err() && !project_gen_retried {
+        println!("LP build failed. Retrying project generation with unused elimination...");
+        gen_projects(config, &cargo_toml, true)?;
+        build_lp(config, build_config, &filtered_env)?;
+        project_gen_retried = true;
+    }
     println!("Building main project...");
-    build_main(config, build_config, &filtered_env)?;
+    if build_main(config, build_config, &filtered_env).is_err() && !project_gen_retried {
+        println!("Main build failed. Retrying project generation with unused elimination...");
+        gen_projects(config, &cargo_toml, true)?;
+        build_main(config, build_config, &filtered_env)?;
+    }
     println!("Build completed.");
     Ok(cargo_toml)
 }
 
 /// Run command
 fn cmd_run(config: &Config) -> Result<cargo_toml::CargoToml> {
-    let cargo_toml = cmd_gen(config, false)?;
+    let cargo_toml = cmd_build(config)?;
     let filtered_env = get_filtered_env();
-    vprintln!(config, "Running projects in: {}", config.destination_path.display());
     let build_config = cargo_toml.get_build_config(&config.build_name).ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?;
-    println!("Building LP project...");
-    build_lp(config, build_config, &filtered_env)?;
     println!("Running main project...");
     run_main(config, build_config, &filtered_env)?;
-    println!("Run completed.");
     Ok(cargo_toml)
 }
 
-fn dont_delete(_path: &Path, _src: &Path, _dst: &Path) -> bool {
-    false
+fn dont_delete(path: &Path, _src: &Path, _dst: &Path) -> bool {
+    path.extension() == Some(std::ffi::OsStr::new("rsmtukai")) // Do not remove analysis cache files.
 }
 
 fn get_template_path(base_path: &Path) -> PathBuf {
@@ -290,10 +301,17 @@ fn gen_project(config: &Config, cargo_toml: &cargo_toml::CargoToml, proc : ProcK
         ProcKind::Main => "has-lp-core",
         ProcKind::Lp => "is-lp-core"
     };
+    let edition = ra_ap_syntax::Edition::from_str(cargo_toml.get_edition()).unwrap_or(ra_ap_syntax::Edition::Edition2024);
+    fn get_cache_path(canon_path: &PathBuf) -> PathBuf {
+        canon_path.with_extension("rsmtukai")
+    }
     if let Some(uar) = unused_analysis_result.as_ref() {
         let copy_decision = |path: &Path, src: &Path, dst: &Path| -> project_clone::CopyingDecision {
             if let Ok(canon) = src.join(path).canonicalize() {
-                if let Some(disabled_content) = uar.get_disabled_content(canon, feature_name) {
+                if let Some(analysis_cache) = uar.get_analysis_cache(&canon) {
+                    let _ = write_when_updated(get_cache_path(&dst.join(path)), &analysis_cache); // Ignore if error occurs.
+                }
+                if let Some(disabled_content) = uar.get_disabled_content(&canon, feature_name) {
                     project_clone::CopyingDecision::TextRewriting(disabled_content)
                 } else {
                     copy_decision_default(path, src, dst)
@@ -307,14 +325,26 @@ fn gen_project(config: &Config, cargo_toml: &cargo_toml::CargoToml, proc : ProcK
             &get_template_path(&config.manifest), &config.get_gen_double(proc_name),
             &dont_delete, &copy_decision)?;
     } else {
+        let copy_decision = |path: &Path, src: &Path, dst: &Path| -> project_clone::CopyingDecision {
+            if let Ok(canon) = src.join(path).canonicalize() {
+                if let Some(disabled_content) =  unused_analysis::UnusedAnalysisResult::get_disabled_content_by_file(edition, &canon, get_cache_path(&dst.join(path)), feature_name) {
+                    project_clone::CopyingDecision::TextRewriting(disabled_content)
+                } else {
+                    copy_decision_default(path, src, dst)
+                }
+            } else {
+                println!("Failed to canonicalize path!! This is a bug!: {}", src.join(path).into_string().unwrap_or_else(|_| "Invalid UTF-8 path".to_string()));
+                copy_decision_default(path, src, dst)
+            }
+        };
         project_clone::clone_project(&config.manifest, &config.get_destination_path(), &config.get_gen_double(proc_name),
             &get_template_path(&config.manifest), &config.get_gen_double(proc_name),
-            &dont_delete, &copy_decision_default)?;
+            &dont_delete, &copy_decision)?;
     }
     let main_cargo_toml = match proc {
         ProcKind::Main => cargo_toml.generate_main_file(&config.manifest)?.to_string(),
         ProcKind::Lp => cargo_toml.generate_lp_file(&config.manifest)?.to_string(),
     };
-    fs::write(&config.get_destination_full(proc_name).join("Cargo.toml"), main_cargo_toml)?;
+    project_clone::write_when_updated(&config.get_destination_full(proc_name).join("Cargo.toml"), &main_cargo_toml)?;
     Ok(())
 }

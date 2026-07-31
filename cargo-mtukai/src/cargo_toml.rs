@@ -72,6 +72,11 @@ impl CargoToml {
         self.build_configs.iter().find(|bc| bc.name == *name.as_ref())
     }
 
+    /// Get the Rust edition.
+    pub fn get_edition(&self) -> &str {
+        &self.edition
+    }
+
     /// Read build parameters from the `[[package.metadata.mtukai.build]]` section of Cargo.toml.
     /// `release_default` is 
     fn read_build_parameters(item: Option<&toml_edit::InlineTable>, chip_conf: &Option<crate::chip_dic::ChipConfParams>, release_default : bool) -> BuildParameter {
