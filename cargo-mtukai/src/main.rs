@@ -9,6 +9,7 @@ mod cargo_toml;
 mod project_clone;
 /// Chip configuration dictionary
 mod chip_dic;
+/// Unused code analysis
 mod unused_analysis;
 
 const GEN_DIR: &str = "target/generated";
@@ -140,7 +141,7 @@ fn cmd_gen(config: &Config, cargo_toml: bool) -> Result<cargo_toml::CargoToml> {
         println!("LP Cargo.toml:\n{}", cargo_toml_data.generate_lp_file(&config.manifest)?);
         return Ok(cargo_toml_data);
     }
-    gen_projects(config, &cargo_toml_data, true)?;
+    gen_projects(config, &cargo_toml_data, false)?;
     println!("Full project clone completed.");
     Ok(cargo_toml_data)
 }
