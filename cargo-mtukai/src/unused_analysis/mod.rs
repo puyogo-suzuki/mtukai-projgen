@@ -9,6 +9,8 @@ use ra_ap_base_db::{SourceDatabase};
 use ra_ap_hir::{AsAssocItem, Crate};
 use ra_ap_syntax::ast::{self, AstNode, HasAttrs, HasModuleItem, HasName};
 
+mod use_elimination;
+
 // fn textrange_to_line_column<S: AsRef<str>, T: AsRef<str>>(path_str: S, txt : T, range: ra_ap_ide::TextRange) -> String {
 //     let start_line_col = txt.as_ref()[..<usize>::from(range.start())].lines().count();
 //     let end_line_col = txt.as_ref()[..range.end().into()].lines().count();
@@ -122,7 +124,6 @@ pub fn analyze_unused<S: AsRef<str>, S1: AsRef<str>>(manifest_path: &Path, featu
         walk_dependency(&mut collections, &root_db);
         Some(collections)
     }).context("Failed to search the main function")?;
-
     let mut ast_collect = AstCollect::new();
     for file_id in source_root.iter() {
         if let Some(path) = source_root.path_for_file(&file_id) { 
@@ -564,7 +565,7 @@ fn walk_dependency(collect: &HirCollect, db: &RootDatabase) {
     fn queue_function(db: &RootDatabase, f: ra_ap_hir::Function, collect: &HirCollect, walkqueue: &mut Vec<ra_ap_hir::Function>) {
         // Is it required to visit?
         fn require_visit(f: &ra_ap_hir::Function, collect: &HirCollect) -> bool {
-            collect.functions.get(f).and_then(|is_visited| Some(!is_visited.is_visited())).unwrap_or(false)
+            collect.functions.get(f).and_then(|is_visited| Some(!is_visited.visit())).unwrap_or(false)
             // unwrap_or(false): Is the function not collected? wonderful.
         }
         // Visit all trait implementers
