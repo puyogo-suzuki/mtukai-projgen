@@ -9,6 +9,8 @@ use ra_ap_base_db::{SourceDatabase};
 use ra_ap_hir::{AsAssocItem, Crate};
 use ra_ap_syntax::ast::{self, AstNode, HasAttrs, HasModuleItem, HasName};
 
+use crate::unused_analysis::use_elimination::UseInfo;
+
 mod use_elimination;
 
 // fn textrange_to_line_column<S: AsRef<str>, T: AsRef<str>>(path_str: S, txt : T, range: ra_ap_ide::TextRange) -> String {
@@ -65,6 +67,7 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>, S3: AsRef<str>>(ma
         workspace_root.to_str().ok_or_else(|| anyhow::anyhow!("failed to convert workspace root to string"))?.to_owned());
     let bin_root = workspace_root.join("src").and_then(|p| p.join("bin")).and_then(|p| p.join("main.rs")).and_then(|p| vfs.file_id(&p)).context("The rust root source file is not found")?.0;
     let root_krate = Crate::all(&root_db).into_iter().find(|c| c.root_file(&root_db) == bin_root).context("not found ")?;
+
     let source_root = root_db.source_root(
         root_db.file_source_root(root_krate.root_file(&root_db)).source_root_id(&root_db)
     ).source_root(&root_db);  
@@ -125,13 +128,16 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>, S3: AsRef<str>>(ma
         walk_dependency(&mut collections, &root_db);
         Some(collections)
     }).context("Failed to search the main function")?;
+    let disabled_optional_deps = collect_disabled_optional_deps(manifest_path, features.as_ref());
     let mut ast_collect = AstCollect::new();
     for file_id in source_root.iter() {
         if let Some(path) = source_root.path_for_file(&file_id) { 
             // exclude template and generated directory.
             if (gen_dir.as_ref().map(|d| !path.starts_with(&d)).unwrap_or(false) && tem_dir.as_ref().map(|d| !path.starts_with(&d)).unwrap_or(false))
             && let Some((_, Some("rs"))) = path.name_and_extension() {  
-                ast_collect.collect_from_file(&file_id, &root_db, &root_krate);
+                ra_ap_hir::attach_db(&root_db, || {
+                    ast_collect.collect_from_file(&file_id, &root_db, &root_krate, &disabled_optional_deps);
+                });
             }
         }
     }
@@ -174,19 +180,29 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>, S3: AsRef<str>>(ma
     Ok(ast_collect.into_unused_analysis_result(&vfs))
 }
 
+#[derive(Debug)]
+enum UnusedItemKind {
+    Function,
+    Use
+}
+
 /// Represents Unused Items
+#[derive(Debug)]
 struct UnusedItem {
     /// The function key
-    function_key : String,
+    key : String,
     /// The range of the function in the source code
-    text_range : TextRange
+    text_range : TextRange,
+    /// The kind of the unused item
+    kind : UnusedItemKind
 }
 
 impl UnusedItem {
-    fn new(function_key: String, text_range: TextRange) -> Self {
+    fn new(key: String, text_range: TextRange, kind: UnusedItemKind) -> Self {
         Self {
-            function_key,
-            text_range
+            key,
+            text_range,
+            kind
         }
     }
 }
@@ -227,10 +243,19 @@ impl UnusedAnalysisResult {
         let cfg_str = format!("#[cfg(not(feature=\"{}\"))]\n", cfg_feature);
         let mut result = String::with_capacity(src_text.len() + unused_items.len() * cfg_str.len());
         let mut itr = 0;
-        for r in unused_items.iter().map(|item| item.text_range) {
+        for UnusedItem { text_range: r, kind: k, .. } in unused_items {
             result.push_str(&src_text[itr..r.start().into()]);
-            result.push_str(&cfg_str);
-            result.push_str(&src_text[r]);
+            match k {
+                UnusedItemKind::Function => {
+                    result.push_str(&cfg_str);
+                    result.push_str(&src_text[*r]);
+                }
+                UnusedItemKind::Use => {
+                    result.push_str("/*");
+                    result.push_str(&src_text[*r]);
+                    result.push_str("*/");
+                }
+            }
             itr = r.end().into();
         }
         if itr < src_text.len() {
@@ -245,7 +270,7 @@ impl UnusedAnalysisResult {
         let items = self.unuseds.get(path.as_ref())?;
         let mut result = String::new();
         for item in items.iter() {
-            result.push_str(item.function_key.as_ref());
+            result.push_str(item.key.as_ref());
             result.push('\n');
         }
         Some(result)
@@ -255,14 +280,14 @@ impl UnusedAnalysisResult {
     /// If the cache file does not exist or is invalid, returns `None`.
     pub fn get_disabled_content_by_file<P1: AsRef<Path>, P2: AsRef<Path>, S: AsRef<str>>(edition: ra_ap_syntax::Edition, path: P1, cache_path: P2, cfg_feature: S) -> Option<String> {
         let cache = std::fs::read_to_string(cache_path.as_ref()).ok()?;
-        let unused_functions = cache.split('\n').collect::<HashSet<_>>();
+        let unuseds = cache.split('\n').filter(|p| !p.trim().is_empty()).collect::<HashSet<_>>();
 
         let src = std::fs::read_to_string(path.as_ref()).ok()?;
         let parse = ra_ap_syntax::SourceFile::parse(&src, edition);
         let file = parse.tree();
-        let mut collect = AstCollectFile::new_from_file(file);
+        let mut collect = AstCollectFile::new_from_file(&file, use_elimination::from_cache_file(&file, &unuseds));
         for (key, val) in collect.functions.iter_mut() {
-            unused_functions.contains(key.as_str()).then(|| val.1 = AstVisitInfo::Unused);
+            unuseds.contains(key.as_str()).then(|| val.1 = AstVisitInfo::Unused);
         }
         Some(Self::impl_disabled_content(&src, &collect.into_vec_unuseditem(), cfg_feature.as_ref()))
     }
@@ -300,11 +325,12 @@ fn get_ast_fn_key(func: &ast::Fn) -> String {
 /// Collected File Information in AST-level
 #[derive(Debug)]
 struct AstCollectFile {
-    functions: HashMap<String, (ra_ap_syntax::ast::Fn, AstVisitInfo)>
+    functions: HashMap<String, (ra_ap_syntax::ast::Fn, AstVisitInfo)>,
+    unresolved_imports: Vec<UseInfo>,
 }
 impl AstCollectFile {
     /// Returns a new `AstCollectFile` instance by collecting function information from the given `file`.
-    fn new_from_file(file: ra_ap_syntax::SourceFile) -> AstCollectFile {
+    fn new_from_file(file: &ra_ap_syntax::SourceFile, unresolved_imports: Vec<UseInfo>) -> AstCollectFile {
         // Check if the function has a `#[panic_handler]` attribute.
         // panic_handlers are used.
         fn has_panic_handler(func: &ast::Fn) -> bool {
@@ -347,20 +373,22 @@ impl AstCollectFile {
                 _ => {}  
             }  
         }  
-        AstCollectFile { functions }
+        AstCollectFile { functions, unresolved_imports }
     }
 
     /// Converts `functions` into the `Vec` of `UnusedItem`s.
     fn into_vec_unuseditem(&self) -> Vec<UnusedItem> {
         let mut ranges: Vec<UnusedItem> = self.functions.values().filter_map(|(func, visit)| {
             if let AstVisitInfo::Unused = visit {
-                Some(UnusedItem::new(get_ast_fn_key(&func), func.syntax().text_range()))
+                Some(UnusedItem::new(get_ast_fn_key(&func), func.syntax().text_range(), UnusedItemKind::Function))
             } else {
                 None
             }
         }).collect();
-        ranges.sort();
-        ranges
+        let mut res = use_elimination::into_vec_unuseditem(&self.unresolved_imports);
+        res.append(&mut ranges);
+        res.sort();
+        res
     }
 }
 
@@ -381,6 +409,138 @@ struct AstCollect {
     files : HashMap<ra_ap_vfs::FileId, AstCollectFile>,
 }
 
+fn parse_disabled_optional_deps_from_toml(
+    toml_str: &str,
+    feature_str: &str,
+) -> HashSet<String> {
+    let mut all_optional_deps = HashSet::new();
+    let mut enabled_deps = HashSet::new();
+
+    let Ok(doc) = toml_str.parse::<toml_edit::DocumentMut>() else {
+        return HashSet::new();
+    };
+
+    let mut check_dep_table = |table: &toml_edit::Item| {
+        if let Some(tbl) = table.as_table() {
+            for (key, val) in tbl.iter() {
+                let is_optional = if let Some(item_tbl) = val.as_table() {
+                    item_tbl.get("optional").and_then(|v| v.as_bool()).unwrap_or(false)
+                } else if let Some(item_inline) = val.as_inline_table() {
+                    item_inline.get("optional").and_then(|v| v.as_bool()).unwrap_or(false)
+                } else {
+                    false
+                };
+
+                if is_optional {
+                    all_optional_deps.insert(key.to_string());
+                }
+            }
+        }
+    };
+
+    if let Some(deps) = doc.get("dependencies") {
+        check_dep_table(deps);
+    }
+    if let Some(dev_deps) = doc.get("dev-dependencies") {
+        check_dep_table(dev_deps);
+    }
+    if let Some(build_deps) = doc.get("build-dependencies") {
+        check_dep_table(build_deps);
+    }
+    if let Some(target) = doc.get("target").and_then(|t| t.as_table()) {
+        for (_k, v) in target.iter() {
+            if let Some(deps) = v.get("dependencies") {
+                check_dep_table(deps);
+            }
+        }
+    }
+
+    let mut active_features = HashSet::new();
+    for f in feature_str.split(&[',', ' '][..]) {
+        let trimmed = f.trim();
+        if !trimmed.is_empty() {
+            active_features.insert(trimmed.to_string());
+        }
+    }
+
+    for feat in &active_features {
+        if all_optional_deps.contains(feat) {
+            enabled_deps.insert(feat.to_string());
+        }
+    }
+
+    let mut queue: Vec<String> = active_features.into_iter().collect();
+    if doc.get("features").and_then(|f| f.get("default")).is_some() && queue.is_empty() {
+        queue.push("default".to_string());
+    }
+
+    let mut visited_features = HashSet::new();
+
+    while let Some(feat_name) = queue.pop() {
+        if !visited_features.insert(feat_name.clone()) {
+            continue;
+        }
+
+        if all_optional_deps.contains(&feat_name) {
+            enabled_deps.insert(feat_name.clone());
+        }
+
+        if let Some(feat_arr) = doc
+            .get("features")
+            .and_then(|f| f.get(&feat_name))
+            .and_then(|v| v.as_array())
+        {
+            for item in feat_arr.iter() {
+                if let Some(s) = item.as_str() {
+                    let s = s.trim();
+                    if let Some(dep_name) = s.strip_prefix("dep:") {
+                        enabled_deps.insert(dep_name.to_string());
+                    } else if s.contains("?/") {
+                        // "foo?/bar" does not explicitly enable optional dep "foo"
+                    } else if let Some((crate_name, _)) = s.split_once('/') {
+                        if all_optional_deps.contains(crate_name) {
+                            enabled_deps.insert(crate_name.to_string());
+                        }
+                        queue.push(crate_name.to_string());
+                    } else {
+                        if all_optional_deps.contains(s) {
+                            enabled_deps.insert(s.to_string());
+                        }
+                        queue.push(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut disabled = HashSet::new();
+    for dep in all_optional_deps {
+        let normalized = dep.replace('-', "_");
+        if !enabled_deps.contains(&dep) && !enabled_deps.contains(&normalized) {
+            disabled.insert(normalized);
+        }
+    }
+
+    disabled
+}
+
+fn collect_disabled_optional_deps(
+    manifest_path: &Path,
+    features_str: &str,
+) -> HashSet<String> {
+    let manifest_file = if manifest_path.is_file() {
+        manifest_path.to_path_buf()
+    } else {
+        manifest_path.join("Cargo.toml")
+    };
+
+    let Ok(content) = std::fs::read_to_string(&manifest_file) else {
+        return HashSet::new();
+    };
+
+    parse_disabled_optional_deps_from_toml(&content, features_str)
+}
+
 impl AstCollect {
     fn new() -> Self {
         Self { files: HashMap::new() }
@@ -388,12 +548,12 @@ impl AstCollect {
     fn get_function_info<S: AsRef<str>>(&mut self, file_id: ra_ap_vfs::FileId, key: S) -> Option<&mut (ra_ap_syntax::ast::Fn, AstVisitInfo)> {
         self.files.get_mut(&file_id).and_then(|file_entry| file_entry.functions.get_mut(key.as_ref()))
     }
-    fn collect_from_file(&mut self, file_id : &ra_ap_vfs::FileId, db : &RootDatabase, root_krate : &Crate) {
+    fn collect_from_file(&mut self, file_id : &ra_ap_vfs::FileId, db : &RootDatabase, root_krate : &Crate, disabled_optional_deps: &HashSet<String>) {
         let text = db.file_text(file_id.clone()).text(db);
         let parse = ra_ap_syntax::SourceFile::parse(&text, root_krate.edition(db));
         let file = parse.tree();
 
-        self.files.insert(file_id.clone(), AstCollectFile::new_from_file(file));
+        self.files.insert(file_id.clone(), AstCollectFile::new_from_file(&file, use_elimination::unresolved_imports(db, file_id, root_krate, disabled_optional_deps)));
     }
 
     fn into_unused_analysis_result(self, vfs: &Vfs) -> UnusedAnalysisResult {
@@ -756,3 +916,34 @@ fn walk_dependency(collect: &HirCollect, db: &RootDatabase) {
 //         _ => {}
 //     }
 // }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_disabled_optional_deps_from_toml() {
+        let toml_content = r#"
+[dependencies]
+esp-println = { version = "0.17", optional = true }
+esp-alloc = { version = "0.10", optional = true }
+esp-lp-hal = { version = "0.3", optional = true }
+panic-halt = { version = "0.2", optional = true }
+
+[features]
+has-lp-core = ["dep:esp-println", "dep:esp-alloc"]
+is-lp-core = ["dep:esp-lp-hal", "dep:panic-halt"]
+"#;
+        let disabled_lp = parse_disabled_optional_deps_from_toml(toml_content, "esp32c6,is-lp-core");
+        assert!(disabled_lp.contains("esp_alloc"));
+        assert!(disabled_lp.contains("esp_println"));
+        assert!(!disabled_lp.contains("esp_lp_hal"));
+        assert!(!disabled_lp.contains("panic_halt"));
+
+        let disabled_hp = parse_disabled_optional_deps_from_toml(toml_content, "esp32c6,has-lp-core");
+        assert!(!disabled_hp.contains("esp_alloc"));
+        assert!(!disabled_hp.contains("esp_println"));
+        assert!(disabled_hp.contains("esp_lp_hal"));
+        assert!(disabled_hp.contains("panic_halt"));
+    }
+}
