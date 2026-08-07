@@ -17,7 +17,8 @@ lp = {
     target = "riscv32imac-unknown-none-elf"
 }
 main = {
-    features = "esp32c6"
+    features = "esp32c6",
+    target = "riscv32imac-unknown-none-elf"
 }
 template = "esp32c6"
 

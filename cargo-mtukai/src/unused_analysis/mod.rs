@@ -21,7 +21,7 @@ mod use_elimination;
 /// Aanalyze to detect the unused items.
 /// `features` must be comma-separated list of features to enable. If empty, all features are enabled.
 /// `entry_point_name` is the name of the entry point function. If None, the main function is used as the entry point.
-pub fn analyze_unused<S: AsRef<str>, S1: AsRef<str>>(manifest_path: &Path, features: S, entry_point_name : Option<S1>) -> Result<UnusedAnalysisResult> {
+pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>, S3: AsRef<str>>(manifest_path: &Path, target: &Option<S1>, features: S2, entry_point_name : Option<S3>) -> Result<UnusedAnalysisResult> {
     let root_crate_root = if manifest_path.is_file() {
         manifest_path.parent().unwrap_or(manifest_path)
     } else {
@@ -37,10 +37,11 @@ pub fn analyze_unused<S: AsRef<str>, S1: AsRef<str>>(manifest_path: &Path, featu
         .filter(|feature| !feature.is_empty())
         .map(ToOwned::to_owned)
         .collect();
-
+    let all_targets = target.is_none();
     let cargo_config = CargoConfig {
         sysroot: Some(ra_ap_project_model::RustLibSource::Discover),
-        all_targets: true,
+        target: target.as_ref().map(|t| t.as_ref().to_string()),
+        all_targets,
         features : if feature_list.is_empty() {
             CargoFeatures::All
         } else {

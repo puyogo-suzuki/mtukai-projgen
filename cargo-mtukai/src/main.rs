@@ -125,7 +125,7 @@ fn cmd_debug(config: &Config) -> Result<()> {
     let cargo_toml_data = cargo_toml::CargoToml::new(config.manifest.join("Cargo.toml"))?;
     let features = cargo_toml_data.get_build_config(&config.build_name)
         .ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?.lp_params.features.clone().unwrap_or_else(|| "".to_string());
-    unused_analysis::analyze_unused(&config.manifest, if features.is_empty() {"is-lp-core".to_owned()} else {features + ",is-lp-core"}, Some("__risc_v_rt__main"))?;
+    unused_analysis::analyze_unused(&config.manifest, &Some("riscv32imac-unknown-none-elf"), if features.is_empty() {"is-lp-core".to_owned()} else {features + ",is-lp-core"}, Some("__risc_v_rt__main"))?;
     Ok(())
 }
 
@@ -147,8 +147,8 @@ fn cmd_gen(config: &Config, cargo_toml: bool) -> Result<cargo_toml::CargoToml> {
 }
 
 fn gen_projects(config: &Config, cargo_toml: &cargo_toml::CargoToml, enable_analysis: bool) -> Result<()>{
-    let features = cargo_toml.get_build_config(&config.build_name)
-        .ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?.lp_params.features.clone().unwrap_or_else(|| "".to_string());
+    let buildconf = cargo_toml.get_build_config(&config.build_name)
+        .ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?;
     fn append_feature<S: AsRef<str>>(features:&String, new_feature: S) -> String{
         if features.is_empty() {
             new_feature.as_ref().to_string()
@@ -158,8 +158,8 @@ fn gen_projects(config: &Config, cargo_toml: &cargo_toml::CargoToml, enable_anal
     }
     let (unused_analysis_result_lp, unused_analysis_result_main) = if enable_analysis {
         (
-            unused_analysis::analyze_unused(&config.manifest, append_feature(&features, "is-lp-core"), Some("__risc_v_rt__main")).ok(),
-            unused_analysis::analyze_unused(&config.manifest, append_feature(&features, "has-lp-core"), None::<&str>).ok()
+            unused_analysis::analyze_unused(&config.manifest, &buildconf.lp_params.target, append_feature(&buildconf.lp_params.features.clone().unwrap_or_else(|| String::new()), "is-lp-core"), Some("__risc_v_rt__main")).ok(),
+            unused_analysis::analyze_unused(&config.manifest, &buildconf.main_params.target, append_feature(&buildconf.main_params.features.clone().unwrap_or_else(|| String::new()), "has-lp-core"), None::<&str>).ok()
         )
     } else {
         (None, None)
