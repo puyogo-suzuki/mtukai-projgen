@@ -7,7 +7,7 @@ use ra_ap_project_model::{CargoConfig, CargoFeatures};
 use ra_ap_vfs::{VfsPath, Vfs};
 use ra_ap_base_db::{SourceDatabase};
 use ra_ap_hir::{AsAssocItem, Crate};
-use ra_ap_syntax::ast::{self, AstNode, HasAttrs, HasModuleItem, HasName};
+use ra_ap_syntax::{AstToken, ast::{self, AstNode, HasAttrs, HasModuleItem, HasName}};
 
 use crate::unused_analysis::use_elimination::UseInfo;
 
@@ -23,7 +23,7 @@ mod use_elimination;
 /// Aanalyze to detect the unused items.
 /// `features` must be comma-separated list of features to enable. If empty, all features are enabled.
 /// `entry_point_name` is the name of the entry point function. If None, the main function is used as the entry point.
-pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>, S3: AsRef<str>>(manifest_path: &Path, target: &Option<S1>, features: S2, entry_point_name : Option<S3>) -> Result<UnusedAnalysisResult> {
+pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Path, target: &Option<S1>, features: &Vec<String>, entry_point_name : Option<S2>) -> Result<UnusedAnalysisResult> {
     let root_crate_root = if manifest_path.is_file() {
         manifest_path.parent().unwrap_or(manifest_path)
     } else {
@@ -33,22 +33,16 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>, S3: AsRef<str>>(ma
         .canonicalize()
         .context("failed to canonicalize workspace root")?;
 
-    let feature_list: Vec<String> = features.as_ref()
-        .split(',')
-        .map(str::trim)
-        .filter(|feature| !feature.is_empty())
-        .map(ToOwned::to_owned)
-        .collect();
     let all_targets = target.is_none();
     let cargo_config = CargoConfig {
         sysroot: Some(ra_ap_project_model::RustLibSource::Discover),
         target: target.as_ref().map(|t| t.as_ref().to_string()),
         all_targets,
-        features : if feature_list.is_empty() {
+        features : if features.is_empty() {
             CargoFeatures::All
         } else {
             CargoFeatures::Selected {
-                features: feature_list,
+                features: features.clone(),
                 no_default_features: false,
             }
         },
@@ -128,7 +122,7 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>, S3: AsRef<str>>(ma
         walk_dependency(&mut collections, &root_db);
         Some(collections)
     }).context("Failed to search the main function")?;
-    let disabled_optional_deps = collect_disabled_optional_deps(manifest_path, features.as_ref());
+    let disabled_optional_deps = collect_disabled_optional_deps(manifest_path, features);
     let mut ast_collect = AstCollect::new();
     for file_id in source_root.iter() {
         if let Some(path) = source_root.path_for_file(&file_id) { 
@@ -136,7 +130,7 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>, S3: AsRef<str>>(ma
             if (gen_dir.as_ref().map(|d| !path.starts_with(&d)).unwrap_or(false) && tem_dir.as_ref().map(|d| !path.starts_with(&d)).unwrap_or(false))
             && let Some((_, Some("rs"))) = path.name_and_extension() {  
                 ra_ap_hir::attach_db(&root_db, || {
-                    ast_collect.collect_from_file(&file_id, &root_db, &root_krate, &disabled_optional_deps);
+                    ast_collect.collect_from_file(&file_id, &root_db, &root_krate, &disabled_optional_deps, features);
                 });
             }
         }
@@ -278,16 +272,18 @@ impl UnusedAnalysisResult {
 
     /// Get the content by using the analysis cache file.
     /// If the cache file does not exist or is invalid, returns `None`.
-    pub fn get_disabled_content_by_file<P1: AsRef<Path>, P2: AsRef<Path>, S: AsRef<str>>(edition: ra_ap_syntax::Edition, path: P1, cache_path: P2, cfg_feature: S) -> Option<String> {
+    pub fn get_disabled_content_by_file<P1: AsRef<Path>, P2: AsRef<Path>, S: AsRef<str>>(edition: ra_ap_syntax::Edition, path: P1, cache_path: P2, cfg_feature: S, features: &Vec<String>) -> Option<String> {
         let cache = std::fs::read_to_string(cache_path.as_ref()).ok()?;
         let unuseds = cache.split('\n').filter(|p| !p.trim().is_empty()).collect::<HashSet<_>>();
 
         let src = std::fs::read_to_string(path.as_ref()).ok()?;
         let parse = ra_ap_syntax::SourceFile::parse(&src, edition);
         let file = parse.tree();
-        let mut collect = AstCollectFile::new_from_file(&file, use_elimination::from_cache_file(&file, &unuseds));
+        let mut collect = AstCollectFile::new_from_file(&file, use_elimination::from_cache_file(&file, &unuseds), features);
         for (key, val) in collect.functions.iter_mut() {
-            unuseds.contains(key.as_str()).then(|| val.1 = AstVisitInfo::Unused);
+            if val.1 == AstVisitInfo::None && unuseds.contains(key.as_str()) {
+                val.1 = AstVisitInfo::Unused;
+            }
         }
         Some(Self::impl_disabled_content(&src, &collect.into_vec_unuseditem(), cfg_feature.as_ref()))
     }
@@ -330,7 +326,7 @@ struct AstCollectFile {
 }
 impl AstCollectFile {
     /// Returns a new `AstCollectFile` instance by collecting function information from the given `file`.
-    fn new_from_file(file: &ra_ap_syntax::SourceFile, unresolved_imports: Vec<UseInfo>) -> AstCollectFile {
+    fn new_from_file(file: &ra_ap_syntax::SourceFile, unresolved_imports: Vec<UseInfo>, features: &Vec<String>) -> AstCollectFile {
         // Check if the function has a `#[panic_handler]` attribute.
         // panic_handlers are used.
         fn has_panic_handler(func: &ast::Fn) -> bool {
@@ -338,12 +334,45 @@ impl AstCollectFile {
                 attr.path().map(|p| p.syntax().text().to_string() == "panic_handler").unwrap_or(false)
             })
         }
+        fn has_undead_macro(func: &ast::Fn, features: &Vec<String>) -> bool {
+            const MACRO_NAME: &str = "mtukai_projgen_undead";
+            func.attrs().any(|attr| {
+                if let Some(path) = attr.path() {
+                    if !path.segment().and_then(|s| s.name_ref()).map(|n| n.text() == MACRO_NAME).unwrap_or(false) && // #[mtukai_projgen_procmacro::mtukai_projgen_undead]
+                        !path.as_single_name_ref().map(|s| s.text() == MACRO_NAME).unwrap_or(false) { // #[mtukai_projgen_undead]
+                        return false;
+                    }
+                    if let Some(tt) = attr.meta().and_then(|t| match t { ast::Meta::TokenTreeMeta(t) => t.token_tree(), _ => None }) {
+                        // #[mtukai_projgen_procmacro::mtukai_projgen_undead("foo", "bar")]
+                        tt.token_trees_and_tokens()  
+                            .filter_map(|it| it.into_token())  
+                            .filter_map(ast::String::cast) 
+                            .map(|s| s.text().to_string())
+                            .any(|f| {
+                                let f = f.chars().skip(1).take(f.len() - 2).collect::<String>(); // Get Foo from "Foo".
+                                features.contains(&f)
+                            })
+                    } else {  // #[mtukai_projgen_procmacro::mtukai_projgen_undead]
+                        true // No features specified, so it is always undead.
+                    }
+                } else {
+                    false // Unknown!
+                }
+            })
+        }
+        fn visit_state(func: &ast::Fn, features: &Vec<String>) -> AstVisitInfo {
+            if has_panic_handler(func) || has_undead_macro(func, features) {
+                AstVisitInfo::Visited
+            } else {
+                AstVisitInfo::None
+            }
+        }
 
         let mut functions = HashMap::new();
         for item in file.items() {
             match item {
                 ast::Item::Fn(func) => {
-                    let visit = if has_panic_handler(&func) { AstVisitInfo::Visited } else { AstVisitInfo::None };
+                    let visit = visit_state(&func, features);
                     functions.insert(get_ast_fn_key(&func), (func, visit));
                 }
                 ast::Item::Impl(impl_) => {
@@ -351,7 +380,7 @@ impl AstCollectFile {
                     if let Some(assoc_item_list) = impl_.assoc_item_list() {
                         for assoc_item in assoc_item_list.assoc_items() {
                             if let ast::AssocItem::Fn(func) = assoc_item {
-                                let visit = if has_panic_handler(&func) { AstVisitInfo::Visited } else { AstVisitInfo::None };
+                                let visit = visit_state(&func, features);
                                 functions.insert(get_ast_fn_key(&func), (func, visit));
                             }
                         }
@@ -361,11 +390,9 @@ impl AstCollectFile {
                     // functions inside trait definition  
                     if let Some(assoc_item_list) = trait_.assoc_item_list() {  
                         for assoc_item in assoc_item_list.assoc_items() {  
-                            if let ast::AssocItem::Fn(func) = assoc_item {
-                                if func.body().is_some() {
-                                    let visit = if has_panic_handler(&func) { AstVisitInfo::Visited } else { AstVisitInfo::None };
-                                    functions.insert(get_ast_fn_key(&func), (func, visit));
-                                }
+                            if let ast::AssocItem::Fn(func) = assoc_item && func.body().is_some() {
+                                let visit = visit_state(&func, features);
+                                functions.insert(get_ast_fn_key(&func), (func, visit));
                             }
                         }
                     }
@@ -411,7 +438,7 @@ struct AstCollect {
 
 fn parse_disabled_optional_deps_from_toml(
     toml_str: &str,
-    feature_str: &str,
+    features: &Vec<String>,
 ) -> HashSet<String> {
     let mut all_optional_deps = HashSet::new();
     let mut enabled_deps = HashSet::new();
@@ -455,21 +482,13 @@ fn parse_disabled_optional_deps_from_toml(
         }
     }
 
-    let mut active_features = HashSet::new();
-    for f in feature_str.split(&[',', ' '][..]) {
-        let trimmed = f.trim();
-        if !trimmed.is_empty() {
-            active_features.insert(trimmed.to_string());
-        }
-    }
-
-    for feat in &active_features {
+    for feat in features.into_iter() {
         if all_optional_deps.contains(feat) {
             enabled_deps.insert(feat.to_string());
         }
     }
 
-    let mut queue: Vec<String> = active_features.into_iter().collect();
+    let mut queue: Vec<String> = features.clone();
     if doc.get("features").and_then(|f| f.get("default")).is_some() && queue.is_empty() {
         queue.push("default".to_string());
     }
@@ -526,7 +545,7 @@ fn parse_disabled_optional_deps_from_toml(
 
 fn collect_disabled_optional_deps(
     manifest_path: &Path,
-    features_str: &str,
+    features: &Vec<String>,
 ) -> HashSet<String> {
     let manifest_file = if manifest_path.is_file() {
         manifest_path.to_path_buf()
@@ -538,7 +557,7 @@ fn collect_disabled_optional_deps(
         return HashSet::new();
     };
 
-    parse_disabled_optional_deps_from_toml(&content, features_str)
+    parse_disabled_optional_deps_from_toml(&content, features)
 }
 
 impl AstCollect {
@@ -548,12 +567,12 @@ impl AstCollect {
     fn get_function_info<S: AsRef<str>>(&mut self, file_id: ra_ap_vfs::FileId, key: S) -> Option<&mut (ra_ap_syntax::ast::Fn, AstVisitInfo)> {
         self.files.get_mut(&file_id).and_then(|file_entry| file_entry.functions.get_mut(key.as_ref()))
     }
-    fn collect_from_file(&mut self, file_id : &ra_ap_vfs::FileId, db : &RootDatabase, root_krate : &Crate, disabled_optional_deps: &HashSet<String>) {
+    fn collect_from_file(&mut self, file_id : &ra_ap_vfs::FileId, db : &RootDatabase, root_krate : &Crate, disabled_optional_deps: &HashSet<String>, features : &Vec<String>) {
         let text = db.file_text(file_id.clone()).text(db);
         let parse = ra_ap_syntax::SourceFile::parse(&text, root_krate.edition(db));
         let file = parse.tree();
 
-        self.files.insert(file_id.clone(), AstCollectFile::new_from_file(&file, use_elimination::unresolved_imports(db, file_id, root_krate, disabled_optional_deps)));
+        self.files.insert(file_id.clone(), AstCollectFile::new_from_file(&file, use_elimination::unresolved_imports(db, file_id, root_krate, disabled_optional_deps), features));
     }
 
     fn into_unused_analysis_result(self, vfs: &Vfs) -> UnusedAnalysisResult {
@@ -934,13 +953,13 @@ panic-halt = { version = "0.2", optional = true }
 has-lp-core = ["dep:esp-println", "dep:esp-alloc"]
 is-lp-core = ["dep:esp-lp-hal", "dep:panic-halt"]
 "#;
-        let disabled_lp = parse_disabled_optional_deps_from_toml(toml_content, "esp32c6,is-lp-core");
+        let disabled_lp = parse_disabled_optional_deps_from_toml(toml_content, &vec!["esp32c6".to_owned(),"is-lp-core".to_owned()]);
         assert!(disabled_lp.contains("esp_alloc"));
         assert!(disabled_lp.contains("esp_println"));
         assert!(!disabled_lp.contains("esp_lp_hal"));
         assert!(!disabled_lp.contains("panic_halt"));
 
-        let disabled_hp = parse_disabled_optional_deps_from_toml(toml_content, "esp32c6,has-lp-core");
+        let disabled_hp = parse_disabled_optional_deps_from_toml(toml_content, &vec!["esp32c6".to_owned(),"has-lp-core".to_owned()]);
         assert!(!disabled_hp.contains("esp_alloc"));
         assert!(!disabled_hp.contains("esp_println"));
         assert!(disabled_hp.contains("esp_lp_hal"));

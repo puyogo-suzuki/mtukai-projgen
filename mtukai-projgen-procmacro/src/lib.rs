@@ -14,6 +14,11 @@
 use proc_macro::TokenStream;
 use quote::quote;
 
+#[proc_macro_attribute]
+pub fn mtukai_projgen_undead(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
 fn get_crate_name(name : &str) -> proc_macro2::TokenStream {
     use proc_macro_crate::crate_name;
     use proc_macro_crate::FoundCrate;

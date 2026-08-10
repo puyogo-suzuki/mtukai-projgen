@@ -123,9 +123,10 @@ fn main() -> Result<()> {
 
 fn cmd_debug(config: &Config) -> Result<()> {
     let cargo_toml_data = cargo_toml::CargoToml::new(config.manifest.join("Cargo.toml"))?;
-    let features = cargo_toml_data.get_build_config(&config.build_name)
-        .ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?.lp_params.features.clone().unwrap_or_else(|| "".to_string());
-    unused_analysis::analyze_unused(&config.manifest, &Some("riscv32imac-unknown-none-elf"), if features.is_empty() {"is-lp-core".to_owned()} else {features + ",is-lp-core"}, Some("__risc_v_rt__main"))?;
+    let mut features = cargo_toml_data.get_build_config(&config.build_name)
+        .ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?.lp_params.get_features_vec();
+    features.push("is-lp-core".to_string());
+    unused_analysis::analyze_unused(&config.manifest, &Some("riscv32imac-unknown-none-elf"), &features, Some("__risc_v_rt__main"))?;
     Ok(())
 }
 
@@ -149,17 +150,14 @@ fn cmd_gen(config: &Config, cargo_toml: bool) -> Result<cargo_toml::CargoToml> {
 fn gen_projects(config: &Config, cargo_toml: &cargo_toml::CargoToml, enable_analysis: bool) -> Result<()>{
     let buildconf = cargo_toml.get_build_config(&config.build_name)
         .ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?;
-    fn append_feature<S: AsRef<str>>(features:&String, new_feature: S) -> String{
-        if features.is_empty() {
-            new_feature.as_ref().to_string()
-        } else {
-            features.clone() + "," + new_feature.as_ref()
-        }
-    }
     let (unused_analysis_result_lp, unused_analysis_result_main) = if enable_analysis {
+        let mut features_lp = buildconf.lp_params.get_features_vec();
+        features_lp.push("is-lp-core".to_string());
+        let mut features_main = buildconf.main_params.get_features_vec();
+        features_main.push("has-lp-core".to_string());
         (
-            unused_analysis::analyze_unused(&config.manifest, &buildconf.lp_params.target, append_feature(&buildconf.lp_params.features.clone().unwrap_or_else(|| String::new()), "is-lp-core"), Some("__risc_v_rt__main")).ok(),
-            unused_analysis::analyze_unused(&config.manifest, &buildconf.main_params.target, append_feature(&buildconf.main_params.features.clone().unwrap_or_else(|| String::new()), "has-lp-core"), None::<&str>).ok()
+            unused_analysis::analyze_unused(&config.manifest, &buildconf.lp_params.target, &features_lp, Some("__risc_v_rt__main")).ok(),
+            unused_analysis::analyze_unused(&config.manifest, &buildconf.main_params.target, &features_main, None::<&str>).ok()
         )
     } else {
         (None, None)
@@ -302,6 +300,14 @@ fn gen_project(config: &Config, cargo_toml: &cargo_toml::CargoToml, proc : ProcK
         ProcKind::Main => "has-lp-core",
         ProcKind::Lp => "is-lp-core"
     };
+    let mut features = {
+        let build_conf = cargo_toml.get_build_config(&config.build_name);
+        build_conf.map(|conf| match proc {
+            ProcKind::Main => conf.main_params.get_features_vec(),
+            ProcKind::Lp => conf.lp_params.get_features_vec()
+        }).unwrap_or(Vec::new())
+    };
+    features.push(feature_name.to_owned());
     let edition = ra_ap_syntax::Edition::from_str(cargo_toml.get_edition()).unwrap_or(ra_ap_syntax::Edition::Edition2024);
     fn get_cache_path(canon_path: &PathBuf) -> PathBuf {
         canon_path.with_extension("rsmtukai")
@@ -328,7 +334,7 @@ fn gen_project(config: &Config, cargo_toml: &cargo_toml::CargoToml, proc : ProcK
     } else {
         let copy_decision = |path: &Path, src: &Path, dst: &Path| -> project_clone::CopyingDecision {
             if let Ok(canon) = src.join(path).canonicalize() {
-                if let Some(disabled_content) =  unused_analysis::UnusedAnalysisResult::get_disabled_content_by_file(edition, &canon, get_cache_path(&dst.join(path)), feature_name) {
+                if let Some(disabled_content) =  unused_analysis::UnusedAnalysisResult::get_disabled_content_by_file(edition, &canon, get_cache_path(&dst.join(path)), feature_name, &features) {
                     project_clone::CopyingDecision::TextRewriting(disabled_content)
                 } else {
                     copy_decision_default(path, src, dst)

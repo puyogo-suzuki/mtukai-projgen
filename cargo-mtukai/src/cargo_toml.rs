@@ -24,6 +24,18 @@ pub struct BuildParameter {
     pub release : bool
 }
 
+impl BuildParameter {
+    pub fn get_features_vec(&self) -> Vec<String> {
+        self.features.as_ref().map(|s|
+            s.split(',')
+             .map(str::trim)
+             .filter(|feature| !feature.is_empty())
+             .map(ToOwned::to_owned)
+             .collect()
+        ).unwrap_or(Vec::new())
+    }
+}
+
 /// Build configuration
 #[derive(Debug)]
 pub struct BuildConfig {
