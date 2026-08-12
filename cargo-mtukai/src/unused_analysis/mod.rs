@@ -1,17 +1,19 @@
-use std::{cell::Cell, collections::{HashMap, HashSet}, fmt::Debug, path::{Path, PathBuf}};
+use std::{collections::{HashMap, HashSet}, fmt::Debug, path::{Path, PathBuf}};
 
 use anyhow::{Context, Result};
 use ra_ap_ide::{RootDatabase, Semantics, TextRange};
 use ra_ap_load_cargo::{load_workspace_at, LoadCargoConfig, ProcMacroServerChoice};
 use ra_ap_project_model::{CargoConfig, CargoFeatures};
-use ra_ap_vfs::{VfsPath, Vfs};
-use ra_ap_base_db::{SourceDatabase};
-use ra_ap_hir::{AsAssocItem, Crate};
-use ra_ap_syntax::{AstToken, ast::{self, AstNode, HasAttrs, HasModuleItem, HasName}};
+use ra_ap_vfs::VfsPath;
+use ra_ap_base_db::SourceDatabase;
+use ra_ap_hir::Crate;
 
 use crate::unused_analysis::use_elimination::UseInfo;
 
 mod use_elimination;
+mod ast_collect;
+mod hir_collect;
+mod crates;
 
 // fn textrange_to_line_column<S: AsRef<str>, T: AsRef<str>>(path_str: S, txt : T, range: ra_ap_ide::TextRange) -> String {
 //     let start_line_col = txt.as_ref()[..<usize>::from(range.start())].lines().count();
@@ -117,17 +119,18 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Pa
     //     edges: std::collections::HashMap::new(),
     // };
     let hircollect = ra_ap_hir::attach_db(&root_db, || {
-        let mut collections = HirCollect::new(&root_krate, &root_db, entry_point_name)?;
+        let collections = hir_collect::HirCollect::new(&root_krate, &root_db, entry_point_name)?;
         // println!("Result: {:?}", collections);
-        walk_dependency(&mut collections, &root_db);
+        collections.walk_dependency(&root_db);
         Some(collections)
     }).context("Failed to search the main function")?;
-    let disabled_optional_deps = collect_disabled_optional_deps(manifest_path, features);
-    let mut ast_collect = AstCollect::new();
+    let disabled_optional_deps = crates::collect_disabled_optional_deps(manifest_path, features);
+    let mut ast_collect = ast_collect::AstCollect::new();
     for file_id in source_root.iter() {
         if let Some(path) = source_root.path_for_file(&file_id) { 
             // exclude template and generated directory.
-            if (gen_dir.as_ref().map(|d| !path.starts_with(&d)).unwrap_or(false) && tem_dir.as_ref().map(|d| !path.starts_with(&d)).unwrap_or(false))
+            if gen_dir.as_ref().map(|d| !path.starts_with(&d)).unwrap_or(false)
+            && tem_dir.as_ref().map(|d| !path.starts_with(&d)).unwrap_or(false)
             && let Some((_, Some("rs"))) = path.name_and_extension() {  
                 ra_ap_hir::attach_db(&root_db, || {
                     ast_collect.collect_from_file(&file_id, &root_db, &root_krate, &disabled_optional_deps, features);
@@ -159,8 +162,7 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Pa
     //     let name = n.name(&root_db);
     //     if n.module(&root_db).krate(&root_db) == root_krate {
     //         dotout.write(&format!("{} [label = \"{}\", fillcolor=4];\n", get_node_name(n) , name.display(&root_db, ra_ap_ide::Edition::Edition2024)).into_bytes()).unwrap();
-    //     }
-    //     else {
+    //     } else {
     //         dotout.write(&format!("{} [label = \"{}\"];\n", get_node_name(n) , name.display(&root_db, ra_ap_ide::Edition::Edition2024)).into_bytes()).unwrap();
     //     }
     // }
@@ -169,7 +171,6 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Pa
     //         dotout.write(&format!("{} -> {};\n", get_node_name(caller), get_node_name(callee)).into_bytes()).unwrap();
     //     }
     // }
-    
     // dotout.write(b"}\n").context("failed to write to def_use_graph.dot")?;
     Ok(ast_collect.into_unused_analysis_result(&vfs))
 }
@@ -279,440 +280,17 @@ impl UnusedAnalysisResult {
         let src = std::fs::read_to_string(path.as_ref()).ok()?;
         let parse = ra_ap_syntax::SourceFile::parse(&src, edition);
         let file = parse.tree();
-        let mut collect = AstCollectFile::new_from_file(&file, use_elimination::from_cache_file(&file, &unuseds), features);
-        for (key, val) in collect.functions.iter_mut() {
-            if val.1 == AstVisitInfo::None && unuseds.contains(key.as_str()) {
-                val.1 = AstVisitInfo::Unused;
+        let mut collect = ast_collect::AstCollectFile::new_from_file(&file, use_elimination::from_cache_file(&file, &unuseds), features);
+        for (key, (_, avi)) in collect.functions.iter_mut() {
+            if *avi == ast_collect::AstVisitInfo::None && unuseds.contains(key.as_str()) {
+                *avi = ast_collect::AstVisitInfo::Unused;
             }
         }
         Some(Self::impl_disabled_content(&src, &collect.into_vec_unuseditem(), cfg_feature.as_ref()))
     }
 }
 
-/// Generate the identifier (key) for functions. e.g., impl:Foo::bar
-fn get_ast_fn_key(func: &ast::Fn) -> String {
-    let fn_name = func.name().map(|n| n.text().to_string()).unwrap_or_else(|| "<unnamed>".to_string());
-    let mut parts = Vec::new();
-    
-    let mut current = func.syntax().parent();
-    while let Some(node) = current {
-        if let Some(impl_) = ast::Impl::cast(node.clone()) {
-            let mut thispart = "impl:".to_string();
-            let self_ty = impl_.self_ty().map(|t| t.syntax().text().to_string().replace([' ', '\n', '\r', '\t'], "")).unwrap_or_default();
-            if let Some(tr) = impl_.trait_().map(|t| t.syntax().text().to_string().replace([' ', '\n', '\r', '\t'], "")) {
-                thispart.push_str(&tr);
-                thispart.push_str(":for:");
-            }
-            thispart.push_str(&self_ty);
-            parts.push(thispart);
-        } else if let Some(tr) = ast::Trait::cast(node.clone()) {
-            parts.push(format!("trait:{}", tr.name().map(|n| n.text().to_string()).unwrap_or_default()));
-        } else if let Some(m) = ast::Module::cast(node.clone()) {
-            parts.push(format!("mod:{}", m.name().map(|n| n.text().to_string()).unwrap_or_default()));
-        }
-        current = node.parent();
-    }
-    
-    parts.reverse();
-    parts.push(format!("fn:{}", fn_name));
-    parts.join("::")
-}
-
-/// Collected File Information in AST-level
-#[derive(Debug)]
-struct AstCollectFile {
-    functions: HashMap<String, (ra_ap_syntax::ast::Fn, AstVisitInfo)>,
-    unresolved_imports: Vec<UseInfo>,
-}
-impl AstCollectFile {
-    /// Returns a new `AstCollectFile` instance by collecting function information from the given `file`.
-    fn new_from_file(file: &ra_ap_syntax::SourceFile, unresolved_imports: Vec<UseInfo>, features: &Vec<String>) -> AstCollectFile {
-        // Check if the function has a `#[panic_handler]` attribute.
-        // panic_handlers are used.
-        fn has_panic_handler(func: &ast::Fn) -> bool {
-            func.attrs().any(|attr| {
-                attr.path().map(|p| p.syntax().text().to_string() == "panic_handler").unwrap_or(false)
-            })
-        }
-        fn has_undead_macro(func: &ast::Fn, features: &Vec<String>) -> bool {
-            const MACRO_NAME: &str = "mtukai_projgen_undead";
-            func.attrs().any(|attr| {
-                if let Some(path) = attr.path() {
-                    if !path.segment().and_then(|s| s.name_ref()).map(|n| n.text() == MACRO_NAME).unwrap_or(false) && // #[mtukai_projgen_procmacro::mtukai_projgen_undead]
-                        !path.as_single_name_ref().map(|s| s.text() == MACRO_NAME).unwrap_or(false) { // #[mtukai_projgen_undead]
-                        return false;
-                    }
-                    if let Some(tt) = attr.meta().and_then(|t| match t { ast::Meta::TokenTreeMeta(t) => t.token_tree(), _ => None }) {
-                        // #[mtukai_projgen_procmacro::mtukai_projgen_undead("foo", "bar")]
-                        tt.token_trees_and_tokens()  
-                            .filter_map(|it| it.into_token())  
-                            .filter_map(ast::String::cast) 
-                            .map(|s| s.text().to_string())
-                            .any(|f| {
-                                let f = f.chars().skip(1).take(f.len() - 2).collect::<String>(); // Get Foo from "Foo".
-                                features.contains(&f)
-                            })
-                    } else {  // #[mtukai_projgen_procmacro::mtukai_projgen_undead]
-                        true // No features specified, so it is always undead.
-                    }
-                } else {
-                    false // Unknown!
-                }
-            })
-        }
-        fn visit_state(func: &ast::Fn, features: &Vec<String>) -> AstVisitInfo {
-            if has_panic_handler(func) || has_undead_macro(func, features) {
-                AstVisitInfo::Visited
-            } else {
-                AstVisitInfo::None
-            }
-        }
-
-        let mut functions = HashMap::new();
-        for item in file.items() {
-            match item {
-                ast::Item::Fn(func) => {
-                    let visit = visit_state(&func, features);
-                    functions.insert(get_ast_fn_key(&func), (func, visit));
-                }
-                ast::Item::Impl(impl_) => {
-                    // functions inside impl block
-                    if let Some(assoc_item_list) = impl_.assoc_item_list() {
-                        for assoc_item in assoc_item_list.assoc_items() {
-                            if let ast::AssocItem::Fn(func) = assoc_item {
-                                let visit = visit_state(&func, features);
-                                functions.insert(get_ast_fn_key(&func), (func, visit));
-                            }
-                        }
-                    }
-                }
-                ast::Item::Trait(trait_) => {  
-                    // functions inside trait definition  
-                    if let Some(assoc_item_list) = trait_.assoc_item_list() {  
-                        for assoc_item in assoc_item_list.assoc_items() {  
-                            if let ast::AssocItem::Fn(func) = assoc_item && func.body().is_some() {
-                                let visit = visit_state(&func, features);
-                                functions.insert(get_ast_fn_key(&func), (func, visit));
-                            }
-                        }
-                    }
-                }
-                _ => {}  
-            }  
-        }  
-        AstCollectFile { functions, unresolved_imports }
-    }
-
-    /// Converts `functions` into the `Vec` of `UnusedItem`s.
-    fn into_vec_unuseditem(&self) -> Vec<UnusedItem> {
-        let mut ranges: Vec<UnusedItem> = self.functions.values().filter_map(|(func, visit)| {
-            if let AstVisitInfo::Unused = visit {
-                Some(UnusedItem::new(get_ast_fn_key(&func), func.syntax().text_range(), UnusedItemKind::Function))
-            } else {
-                None
-            }
-        }).collect();
-        let mut res = use_elimination::into_vec_unuseditem(&self.unresolved_imports);
-        res.append(&mut ranges);
-        res.sort();
-        res
-    }
-}
-
-/// Visit Information for `AstCollect`
-#[derive(Debug, Eq, PartialEq)]
-enum AstVisitInfo {
-    /// It is not recognized in HIR-level.
-    None,
-    /// It is unused.
-    Unused,
-    /// It is used.
-    Visited
-}
-
-/// Collected Information in AST-level
-#[derive(Debug)]
-struct AstCollect {
-    files : HashMap<ra_ap_vfs::FileId, AstCollectFile>,
-}
-
-fn parse_disabled_optional_deps_from_toml(
-    toml_str: &str,
-    features: &Vec<String>,
-) -> HashSet<String> {
-    let mut all_optional_deps = HashSet::new();
-    let mut enabled_deps = HashSet::new();
-
-    let Ok(doc) = toml_str.parse::<toml_edit::DocumentMut>() else {
-        return HashSet::new();
-    };
-
-    let mut check_dep_table = |table: &toml_edit::Item| {
-        if let Some(tbl) = table.as_table() {
-            for (key, val) in tbl.iter() {
-                let is_optional = if let Some(item_tbl) = val.as_table() {
-                    item_tbl.get("optional").and_then(|v| v.as_bool()).unwrap_or(false)
-                } else if let Some(item_inline) = val.as_inline_table() {
-                    item_inline.get("optional").and_then(|v| v.as_bool()).unwrap_or(false)
-                } else {
-                    false
-                };
-
-                if is_optional {
-                    all_optional_deps.insert(key.to_string());
-                }
-            }
-        }
-    };
-
-    if let Some(deps) = doc.get("dependencies") {
-        check_dep_table(deps);
-    }
-    if let Some(dev_deps) = doc.get("dev-dependencies") {
-        check_dep_table(dev_deps);
-    }
-    if let Some(build_deps) = doc.get("build-dependencies") {
-        check_dep_table(build_deps);
-    }
-    if let Some(target) = doc.get("target").and_then(|t| t.as_table()) {
-        for (_k, v) in target.iter() {
-            if let Some(deps) = v.get("dependencies") {
-                check_dep_table(deps);
-            }
-        }
-    }
-
-    for feat in features.into_iter() {
-        if all_optional_deps.contains(feat) {
-            enabled_deps.insert(feat.to_string());
-        }
-    }
-
-    let mut queue: Vec<String> = features.clone();
-    if doc.get("features").and_then(|f| f.get("default")).is_some() && queue.is_empty() {
-        queue.push("default".to_string());
-    }
-
-    let mut visited_features = HashSet::new();
-
-    while let Some(feat_name) = queue.pop() {
-        if !visited_features.insert(feat_name.clone()) {
-            continue;
-        }
-
-        if all_optional_deps.contains(&feat_name) {
-            enabled_deps.insert(feat_name.clone());
-        }
-
-        if let Some(feat_arr) = doc
-            .get("features")
-            .and_then(|f| f.get(&feat_name))
-            .and_then(|v| v.as_array())
-        {
-            for item in feat_arr.iter() {
-                if let Some(s) = item.as_str() {
-                    let s = s.trim();
-                    if let Some(dep_name) = s.strip_prefix("dep:") {
-                        enabled_deps.insert(dep_name.to_string());
-                    } else if s.contains("?/") {
-                        // "foo?/bar" does not explicitly enable optional dep "foo"
-                    } else if let Some((crate_name, _)) = s.split_once('/') {
-                        if all_optional_deps.contains(crate_name) {
-                            enabled_deps.insert(crate_name.to_string());
-                        }
-                        queue.push(crate_name.to_string());
-                    } else {
-                        if all_optional_deps.contains(s) {
-                            enabled_deps.insert(s.to_string());
-                        }
-                        queue.push(s.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    let mut disabled = HashSet::new();
-    for dep in all_optional_deps {
-        let normalized = dep.replace('-', "_");
-        if !enabled_deps.contains(&dep) && !enabled_deps.contains(&normalized) {
-            disabled.insert(normalized);
-        }
-    }
-
-    disabled
-}
-
-fn collect_disabled_optional_deps(
-    manifest_path: &Path,
-    features: &Vec<String>,
-) -> HashSet<String> {
-    let manifest_file = if manifest_path.is_file() {
-        manifest_path.to_path_buf()
-    } else {
-        manifest_path.join("Cargo.toml")
-    };
-
-    let Ok(content) = std::fs::read_to_string(&manifest_file) else {
-        return HashSet::new();
-    };
-
-    parse_disabled_optional_deps_from_toml(&content, features)
-}
-
-impl AstCollect {
-    fn new() -> Self {
-        Self { files: HashMap::new() }
-    }
-    fn get_function_info<S: AsRef<str>>(&mut self, file_id: ra_ap_vfs::FileId, key: S) -> Option<&mut (ra_ap_syntax::ast::Fn, AstVisitInfo)> {
-        self.files.get_mut(&file_id).and_then(|file_entry| file_entry.functions.get_mut(key.as_ref()))
-    }
-    fn collect_from_file(&mut self, file_id : &ra_ap_vfs::FileId, db : &RootDatabase, root_krate : &Crate, disabled_optional_deps: &HashSet<String>, features : &Vec<String>) {
-        let text = db.file_text(file_id.clone()).text(db);
-        let parse = ra_ap_syntax::SourceFile::parse(&text, root_krate.edition(db));
-        let file = parse.tree();
-
-        self.files.insert(file_id.clone(), AstCollectFile::new_from_file(&file, use_elimination::unresolved_imports(db, file_id, root_krate, disabled_optional_deps), features));
-    }
-
-    fn into_unused_analysis_result(self, vfs: &Vfs) -> UnusedAnalysisResult {
-        let mut res  = HashMap::new();
-        for (path, file_entry) in self.files.into_iter()
-            .filter_map(|(file_id, file_entry)|
-                vfs.file_path(file_id).as_path().map(|v| v.to_path_buf()).and_then(|p| Some((p, file_entry)))
-            ) {
-            let ranges = file_entry.into_vec_unuseditem();
-            if !ranges.is_empty() {
-                res.insert(path.into(), ranges);
-            }
-        }
-        UnusedAnalysisResult { unuseds: res }
-    }
-}
-
-
-
-/// Visit Infomation for HIR
-#[derive(Debug, PartialEq, Eq)]
-struct HirVisit {
-    visited : Cell<bool>
-}
-
-impl HirVisit {
-    /// Create a new `HirVisit` instance with the `visited` flag set to `true`.
-    fn force_visited() -> Self {
-        Self::new(true)
-    }
-    /// Create a new `HirVisit` instance
-    fn new(visited : bool) -> Self {
-        Self {
-            visited : Cell::new(visited),
-        }
-    }
-
-    /// Set the `visited` flag to `true` and return the previous value of the `visited` flag.
-    fn visit(&self) -> bool {
-        let ret = self.is_visited();
-        self.visited.set(true);
-        ret
-    }
-
-    /// Check the whether the item is visited or force_visited.
-    fn is_visited(&self) -> bool {
-        self.visited.get()
-    }
-}
-
-#[derive(Debug)]
-struct HirCollect {
-    functions: HashMap<ra_ap_hir::Function, HirVisit>,
-    traits: HashMap<ra_ap_hir::Trait, HirVisit>,
-    adts: HashMap<ra_ap_hir::Adt, HirVisit>,
-    consts: HashMap<ra_ap_hir::Const, HirVisit>,
-    statics: HashMap<ra_ap_hir::Static, HirVisit>,
-}
-
-impl HirCollect {
-    /// Construct 'HirCollect'. Return `None` if the entry point function is not found.
-    fn new<S: AsRef<str>>(root_krate: &Crate, db: &RootDatabase, entrypoint_name : Option<S>) -> Option<Self> {
-        let mut result = HirCollect {
-            functions: HashMap::new(),
-            traits: HashMap::new(),
-            adts: HashMap::new(),
-            consts: HashMap::new(),
-            statics: HashMap::new(),
-        };
-        let sema = Semantics::new(db);
-        let mut found_main = false;
-
-        fn do_module<S: AsRef<str>>(m: ra_ap_hir::Module, collect: &mut HirCollect,
-            found_main: &mut bool, sema: &Semantics<RootDatabase>, db: &RootDatabase, entrypoint_name : &Option<S>, entry_str: &ra_ap_syntax::SmolStr) {
-            for imp in m.impl_defs(db) {
-                let force_visited = imp.trait_(db).is_some();
-                for i in imp.items(db).iter() {
-                    match i {
-                        ra_ap_hir::AssocItem::Function(f) => {
-                            collect.functions.insert(f.clone(), HirVisit::new(force_visited));
-                        }
-                        ra_ap_hir::AssocItem::Const(c) => {
-                            collect.consts.insert(c.clone(), HirVisit::new(force_visited));
-                        }
-                        ra_ap_hir::AssocItem::TypeAlias(_) => {
-                            // DO NOTHING
-                        }
-                    }
-                }
-            }
-            for d in m.declarations(db) {
-                match d {
-                        ra_ap_hir::ModuleDef::Module(m) => {
-                            do_module(m, collect, found_main, sema, db, entrypoint_name, entry_str);
-                    }
-                    ra_ap_hir::ModuleDef::Function(f) => {
-                        let is_visited = 
-                        if let Some(entry_name) = entrypoint_name {
-                            f.name(db).as_str() == entry_name.as_ref()
-                        } else {
-                            f.is_main(db)
-                        };
-                        *found_main |= is_visited;
-                        collect.functions.insert(f, HirVisit::new(is_visited));
-                    }
-                    ra_ap_hir::ModuleDef::Adt(adt) => {
-                        collect.adts.insert(adt, HirVisit::force_visited());
-                    }
-                    ra_ap_hir::ModuleDef::Const(c) => {
-                        collect.consts.insert(c, HirVisit::force_visited());
-                    }
-                    ra_ap_hir::ModuleDef::Static(st) => {
-                        collect.statics.insert(st, HirVisit::force_visited());
-                    }
-                    ra_ap_hir::ModuleDef::Trait(t) => {
-                        collect.traits.insert(t, HirVisit::force_visited());
-                        for item in t.items(db) {
-                            if let ra_ap_hir::AssocItem::Function(f) = item {
-                                if let Some(source) = sema.source(f.clone()) {
-                                    if source.value.body().is_some() {
-                                        collect.functions.insert(f, HirVisit::new(true)); // CURRENTLY
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        for d in root_krate.modules(db) {
-            do_module(d, &mut result, &mut found_main, &sema, db, &entrypoint_name, &ra_ap_syntax::SmolStr::new("entry"));
-        }
-        if found_main {
-            Some(result)
-        } else { None }
-    }
-}
-
-fn check_used_functions_in_ast(hircollect: &HirCollect, ast_collect: &mut AstCollect, db: &RootDatabase) {
+fn check_used_functions_in_ast(hircollect: &hir_collect::HirCollect, ast_collect: &mut ast_collect::AstCollect, db: &RootDatabase) {
     let sema = Semantics::new(db);
     for (f, visit) in hircollect.functions.iter() {
         if let Some(source) = sema.source(f.clone()) {
@@ -721,123 +299,13 @@ fn check_used_functions_in_ast(hircollect: &HirCollect, ast_collect: &mut AstCol
             } else {
                 source.file_id.original_file(db)
             }.file_id(db);
-            if let Some(vis) = ast_collect.get_function_info(file_id, &get_ast_fn_key(&source.value)) {
-                // println!("hir function {} -> ast function {} is {:?}", f.name(db).display(db, ra_ap_ide::Edition::Edition2024), vis.0.name().map(|n| n.text().to_string()).unwrap_or_else(|| "<unnamed>".to_string()), if visit.is_visited() { "visited" } else { "unused" });
+            if let Some((_, avi)) = ast_collect.get_function_info(file_id, &ast_collect::get_ast_fn_key(&source.value)) {
                 if visit.is_visited() {
-                    vis.1 = AstVisitInfo::Visited;
-                } else if vis.1 == AstVisitInfo::None { // Do not make it unused if it is already visited in HIR-level.
-                    vis.1 = AstVisitInfo::Unused; // It is recognized in HIR-level and unused.
+                    *avi = ast_collect::AstVisitInfo::Visited;
+                } else if *avi == ast_collect::AstVisitInfo::None { // Do not make it unused if it is already visited in HIR-level.
+                    *avi = ast_collect::AstVisitInfo::Unused; // It is recognized in HIR-level and unused.
                 }
             }
-        }
-    }
-}
-
-/// Walk the dependency.
-fn walk_dependency(collect: &HirCollect, db: &RootDatabase) {
-    let mut walkqueue = Vec::<ra_ap_hir::Function>::new();
-    for (f, val) in collect.functions.iter().filter(|(_, v)| v.is_visited()){
-        walkqueue.push(f.clone());
-        val.visit();
-    }
-    let sema = Semantics::new(db);
-    // Queue to walk
-    fn queue_function(db: &RootDatabase, f: ra_ap_hir::Function, collect: &HirCollect, walkqueue: &mut Vec<ra_ap_hir::Function>) {
-        // Is it required to visit?
-        fn require_visit(f: &ra_ap_hir::Function, collect: &HirCollect) -> bool {
-            collect.functions.get(f).and_then(|is_visited| Some(!is_visited.visit())).unwrap_or(false)
-            // unwrap_or(false): Is the function not collected? wonderful.
-        }
-        // Visit all trait implementers
-        fn visit_all_trait_implementers(db: &RootDatabase, function_name: &ra_ap_hir::Name, trait_: &ra_ap_hir::Trait, collect: &HirCollect, walkqueue: &mut Vec<ra_ap_hir::Function>) {
-            for imp in ra_ap_hir::Impl::all_for_trait(db, *trait_).into_iter() {
-                for item in imp.items(db).iter() {
-                    if let ra_ap_hir::AssocItem::Function(func) = item
-                            && &func.name(db) == function_name && require_visit(&func, collect) {
-                                // The function name is same and it is required to visit.
-                        walkqueue.push(func.clone());
-                    }
-                }
-            }
-        }
-        if require_visit(&f, collect) { // Check whether it must be visited.
-            if let Some(assoc) = f.as_assoc_item(db) {   // If it is an associated function.
-                match assoc.container(db) {  
-                    ra_ap_hir::AssocItemContainer::Trait(t) => {  
-                        // trait Foo
-                        visit_all_trait_implementers(db, &f.name(db), &t, collect, walkqueue);
-                    }  
-                    ra_ap_hir::AssocItemContainer::Impl(i) => {  
-                        if let Some(t) =  i.trait_(db)  {
-                            // impl Foo for Bar
-                            visit_all_trait_implementers(db, &f.name(db), &t, collect, walkqueue);
-                        } else {
-                            // impl Bar
-                            // DO NOTHING
-                        }
-                    }
-                }  
-            } else {  
-                // Non associated function.
-                // DO NOTHING
-            }
-            walkqueue.push(f.clone());
-        }
-    }
-    fn scan_syntax_for_functions(
-        db: &RootDatabase,
-        syntax: &ra_ap_syntax::SyntaxNode,
-        collect: &HirCollect,
-        walkqueue: &mut Vec<ra_ap_hir::Function>,
-        sema: &Semantics<RootDatabase>,
-    ) {
-        for expr in syntax.descendants().filter_map(ast::CallableExpr::cast) {
-            match expr {
-                ast::CallableExpr::Call(call) => {
-                    if let Some(callable) = call.expr()
-                        .and_then(|expr| sema.type_of_expr(&expr)) // Failure of inferring means the called function is not defined in user's crate.
-                        .and_then(|ty| ty.adjusted().as_callable(db)) { // The fialure means that it is not callable.
-                        if let ra_ap_hir::CallableKind::Function(resolved) = callable.kind() {
-                            // Check only if it is function.
-                            // Because: 
-                            //  - TupleStruct and TupleEnumVariant are compiler intrinsics.
-                            //  - The callees of the Closure, FnPtr, FnImpl are collected on the defined place.
-                            queue_function(db, resolved.clone(), collect, walkqueue);
-                        }
-                    }
-                }
-                ast::CallableExpr::MethodCall(call) => {
-                    if let Some(resolved) = sema.resolve_method_call(&call) {
-                        queue_function(db, resolved.clone(), collect, walkqueue);
-                    }
-                }
-            }
-        }
-        // Higher-order function
-        for pr in syntax.descendants()
-            .filter_map(ast::PathExpr::cast)
-            .filter_map(|path_expr| path_expr.path().and_then(|path| sema.resolve_path(&path))) {
-            if let ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Function(resolved)) = pr {
-                queue_function(db, resolved, collect, walkqueue);
-            }
-        }
-    }
-
-    // Scan initializers of consts and statics
-    for c in collect.consts.keys() {
-        if let Some(body) = sema.source(*c).and_then(|s| s.value.body()) {
-            scan_syntax_for_functions(db, body.syntax(), collect, &mut walkqueue, &sema);
-        }
-    }
-    for st in collect.statics.keys() {
-        if let Some(body) = sema.source(*st).and_then(|s| s.value.body()) {
-            scan_syntax_for_functions(db, body.syntax(), collect, &mut walkqueue, &sema);
-        }
-    }
-
-    while let Some(f) = walkqueue.pop() {
-        if let Some(b) = sema.source(f) {
-            scan_syntax_for_functions(db, b.value.syntax(), collect, &mut walkqueue, &sema);
         }
     }
 }
@@ -853,19 +321,15 @@ fn walk_dependency(collect: &HirCollect, db: &RootDatabase) {
 //         self.edges.entry(caller).or_insert_with(std::collections::HashSet::new).insert(callee);
 //     }
 // }
-
 // fn print_all_traits(db: &RootDatabase, def: ra_ap_hir::ModuleDef) {
 //     match &def {
-//         ra_ap_hir::ModuleDef::Trait(t) => {
-//             println!("Trait: {} id:{:?}", t.name(db).display(db, ra_ap_ide::Edition::Edition2024), t);
-//         }
+//         ra_ap_hir::ModuleDef::Trait(t) => println!("Trait: {} id:{:?}", t.name(db).display(db, ra_ap_ide::Edition::Edition2024), t),
 //         _ => {}
 //     }
 // }
 
 // fn print_all_dependencies(callgraph: &mut CallGraph, db: &RootDatabase, def : ra_ap_hir::ModuleDef) {
 //     let sema = Semantics::new(db);
-        
 //     match &def {
 //         ra_ap_hir::ModuleDef::Function(f) => {
 //             let name = f.name(db);
@@ -873,10 +337,8 @@ fn walk_dependency(collect: &HirCollect, db: &RootDatabase) {
 //             for ty in DefWithBody::Function(*f).expression_types(db) {  
 //                 println!("  related types: {:?}", ty);
 //             }  
-//             if let Some(s) = sema.source(*f)
-//                 && let Some(b) = s.value.body() {
-//                 for expr in b.syntax().descendants()
-//                     .filter_map(ast::CallableExpr::cast) {
+//             if let Some(s) = sema.source(*f) && let Some(b) = s.value.body() {
+//                 for expr in b.syntax().descendants().filter_map(ast::CallableExpr::cast) {
 //                     match expr {
 //                         ast::CallableExpr::Call(call) => {
 //                             if let Some(expr) = call.expr() {
@@ -913,8 +375,7 @@ fn walk_dependency(collect: &HirCollect, db: &RootDatabase) {
 //                             }
 //                         }
 //                         ast::CallableExpr::MethodCall(call) => {  
-//                             let func = ra_ap_hir::attach_db(db, || {sema.resolve_method_call(&call)});
-//                             if let Some(resolved) = func {
+//                             if let Some(resolved) = ra_ap_hir::attach_db(db, || {sema.resolve_method_call(&call)}) {
 //                                 println!("  {:?} -MC> {} id:{:?} in module {:?}", call.syntax().text(), resolved.name(db).display(db, ra_ap_ide::Edition::Edition2024), resolved, resolved.module(db).name(db));
 //                                 callgraph.add_edge(f.clone(), resolved.clone());
 //                             } else {
@@ -925,7 +386,6 @@ fn walk_dependency(collect: &HirCollect, db: &RootDatabase) {
 //                     }
 //                 }
 //             }
-            
 //         }
 //         ra_ap_hir::ModuleDef::Module(m) => {
 //             for sub_def in m.declarations(db) {
@@ -935,34 +395,3 @@ fn walk_dependency(collect: &HirCollect, db: &RootDatabase) {
 //         _ => {}
 //     }
 // }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_disabled_optional_deps_from_toml() {
-        let toml_content = r#"
-[dependencies]
-esp-println = { version = "0.17", optional = true }
-esp-alloc = { version = "0.10", optional = true }
-esp-lp-hal = { version = "0.3", optional = true }
-panic-halt = { version = "0.2", optional = true }
-
-[features]
-has-lp-core = ["dep:esp-println", "dep:esp-alloc"]
-is-lp-core = ["dep:esp-lp-hal", "dep:panic-halt"]
-"#;
-        let disabled_lp = parse_disabled_optional_deps_from_toml(toml_content, &vec!["esp32c6".to_owned(),"is-lp-core".to_owned()]);
-        assert!(disabled_lp.contains("esp_alloc"));
-        assert!(disabled_lp.contains("esp_println"));
-        assert!(!disabled_lp.contains("esp_lp_hal"));
-        assert!(!disabled_lp.contains("panic_halt"));
-
-        let disabled_hp = parse_disabled_optional_deps_from_toml(toml_content, &vec!["esp32c6".to_owned(),"has-lp-core".to_owned()]);
-        assert!(!disabled_hp.contains("esp_alloc"));
-        assert!(!disabled_hp.contains("esp_println"));
-        assert!(disabled_hp.contains("esp_lp_hal"));
-        assert!(disabled_hp.contains("panic_halt"));
-    }
-}
