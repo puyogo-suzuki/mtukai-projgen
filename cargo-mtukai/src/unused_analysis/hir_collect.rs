@@ -53,12 +53,67 @@ impl HirCollect {
         };
         let sema = Semantics::new(db);
         let mut found_main = false;
-
         for m in root_krate.modules(db) {
             found_main |= result.do_module(m, &sema, db, &entrypoint_name);
         }
-
         found_main.then_some(result)
+    }
+
+    fn do_module<S: AsRef<str>>(&mut self, m: ra_ap_hir::Module, sema: &Semantics<RootDatabase>, db: &RootDatabase, entrypoint_name: &Option<S>) -> bool {
+        let mut found_main = false;
+        for imp in m.impl_defs(db) {
+            let force_visited = imp.trait_(db).is_some();
+            for i in imp.items(db).iter() {
+                match i {
+                    ra_ap_hir::AssocItem::Function(f) => {
+                        self.functions.insert(f.clone(), HirVisit::new(force_visited));
+                    }
+                    ra_ap_hir::AssocItem::Const(c) => {
+                        self.consts.insert(c.clone(), HirVisit::new(force_visited));
+                    }
+                    ra_ap_hir::AssocItem::TypeAlias(_) => {
+                        // DO NOTHING
+                    }
+                }
+            }
+        }
+
+        for d in m.declarations(db) {
+            match d {
+                ra_ap_hir::ModuleDef::Module(sub_m) => {
+                    found_main |= self.do_module(sub_m, sema, db, entrypoint_name);
+                }
+                ra_ap_hir::ModuleDef::Function(f) => {
+                    let is_visited = if let Some(entry_name) = entrypoint_name {
+                        f.name(db).as_str() == entry_name.as_ref()
+                    } else {
+                        f.is_main(db)
+                    };
+                    found_main |= is_visited;
+                    self.functions.insert(f, HirVisit::new(is_visited));
+                }
+                ra_ap_hir::ModuleDef::Adt(adt) => {
+                    self.adts.insert(adt, HirVisit::force_visited());
+                }
+                ra_ap_hir::ModuleDef::Const(c) => {
+                    self.consts.insert(c, HirVisit::force_visited());
+                }
+                ra_ap_hir::ModuleDef::Static(st) => {
+                    self.statics.insert(st, HirVisit::force_visited());
+                }
+                ra_ap_hir::ModuleDef::Trait(t) => {
+                    self.traits.insert(t, HirVisit::force_visited());
+                    for item in t.items(db) {
+                        if let ra_ap_hir::AssocItem::Function(f) = item
+                            && sema.source(f.clone()).and_then(|s| s.value.body()).is_some() {
+                            self.functions.insert(f, HirVisit::new(true));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        found_main
     }
 
     /// Walk the dependency.
@@ -169,62 +224,5 @@ impl HirCollect {
                 self.queue_function(db, resolved, walkqueue);
             }
         }
-    }
-    
-    fn do_module<S: AsRef<str>>(&mut self, m: ra_ap_hir::Module, sema: &Semantics<RootDatabase>, db: &RootDatabase, entrypoint_name: &Option<S>) -> bool {
-        let mut found_main = false;
-        for imp in m.impl_defs(db) {
-            let force_visited = imp.trait_(db).is_some();
-            for i in imp.items(db).iter() {
-                match i {
-                    ra_ap_hir::AssocItem::Function(f) => {
-                        self.functions.insert(f.clone(), HirVisit::new(force_visited));
-                    }
-                    ra_ap_hir::AssocItem::Const(c) => {
-                        self.consts.insert(c.clone(), HirVisit::new(force_visited));
-                    }
-                    ra_ap_hir::AssocItem::TypeAlias(_) => {
-                        // DO NOTHING
-                    }
-                }
-            }
-        }
-
-        for d in m.declarations(db) {
-            match d {
-                ra_ap_hir::ModuleDef::Module(sub_m) => {
-                    found_main |= self.do_module(sub_m, sema, db, entrypoint_name);
-                }
-                ra_ap_hir::ModuleDef::Function(f) => {
-                    let is_visited = if let Some(entry_name) = entrypoint_name {
-                        f.name(db).as_str() == entry_name.as_ref()
-                    } else {
-                        f.is_main(db)
-                    };
-                    found_main |= is_visited;
-                    self.functions.insert(f, HirVisit::new(is_visited));
-                }
-                ra_ap_hir::ModuleDef::Adt(adt) => {
-                    self.adts.insert(adt, HirVisit::force_visited());
-                }
-                ra_ap_hir::ModuleDef::Const(c) => {
-                    self.consts.insert(c, HirVisit::force_visited());
-                }
-                ra_ap_hir::ModuleDef::Static(st) => {
-                    self.statics.insert(st, HirVisit::force_visited());
-                }
-                ra_ap_hir::ModuleDef::Trait(t) => {
-                    self.traits.insert(t, HirVisit::force_visited());
-                    for item in t.items(db) {
-                        if let ra_ap_hir::AssocItem::Function(f) = item
-                            && sema.source(f.clone()).and_then(|s| s.value.body()).is_some() {
-                            self.functions.insert(f, HirVisit::new(true));
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        found_main
     }
 }

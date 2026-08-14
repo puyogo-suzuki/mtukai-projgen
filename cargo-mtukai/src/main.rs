@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::{cell::RefCell, path::{Path, PathBuf}, process::Command, str::FromStr};
+use std::{cell::RefCell, path::{Path, PathBuf}, process::Command, str::FromStr, collections::HashMap};
 use crate::{cargo_toml::BuildParameter, project_clone::{copy_decision_default, write_when_updated}};
 
 /// Cargo.toml utilities
@@ -30,13 +30,12 @@ impl Config {
         let manifest = 
             manifest_path
                 .and_then(|p| {
-                    if p.is_file() {
-                        p.parent().map(|parent| parent.to_path_buf())
+                    if p.is_file() && let Some(parent) = p.parent() {
+                        Some(parent.to_path_buf())
                     } else {
                         Some(p.to_path_buf())
                     }
-                })
-                .unwrap_or_else(|| PathBuf::from("./"));
+                }).unwrap_or_else(|| PathBuf::from("./"));
         let destination_path = manifest.join(output_dir.clone().unwrap_or_else(|| PathBuf::from(GEN_DIR)));
         Config {
             manifest,
@@ -152,8 +151,8 @@ fn gen_projects(config: &Config, cargo_toml: &cargo_toml::CargoToml, enable_anal
         .ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?;
     let (unused_analysis_result_lp, unused_analysis_result_main) = if enable_analysis {
         let mut features_lp = buildconf.lp_params.get_features_vec();
+        let mut features_main = features_lp.clone();
         features_lp.push("is-lp-core".to_string());
-        let mut features_main = buildconf.main_params.get_features_vec();
         features_main.push("has-lp-core".to_string());
         (
             unused_analysis::analyze_unused(&config.manifest, &buildconf.lp_params.target, &features_lp, Some("__risc_v_rt__main")).ok(),
@@ -186,7 +185,7 @@ fn gen_args<S: AsRef<str>>(command : S, build_parameter : &BuildParameter, relea
 }
 
 /// Execute cargo for the LP project.
-fn build_lp(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>) -> Result<()> {
+fn build_lp(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &HashMap<String, String>) -> Result<()> {
     let lp_path = config.get_destination_full("lp");
     vprintln!(config, "LP project path: {}", lp_path.display());
     if !lp_path.exists() {
@@ -199,15 +198,15 @@ fn build_lp(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &st
         .envs(envs)
         .current_dir(&lp_path)
         .status()?;
-    if !status.success() {
-        Err(anyhow::anyhow!("cargo build failed for LP project"))
-    } else {
+    if status.success() {
         Ok(())
+    } else {
+        Err(anyhow::anyhow!("cargo build failed for LP project"))
     }
 }
 
 /// Execute cargo for the main project.
-fn impl_cargo_exec_main(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>, cmd : &str) -> Result<()> {
+fn impl_cargo_exec_main(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &HashMap<String, String>, cmd : &str) -> Result<()> {
     let main_path = config.get_destination_full("main");
     vprintln!(config, "Main project path: {}", main_path.display());
     if !main_path.exists() {
@@ -220,28 +219,26 @@ fn impl_cargo_exec_main(config: &Config, build_config : &cargo_toml::BuildConfig
         .envs(envs)
         .current_dir(&main_path)
         .status()?;
-    if !status.success() {
-        Err(anyhow::anyhow!("cargo {} failed for main project", cmd))
-    } else {
+    if status.success() {
         Ok(())
+    } else {
+        Err(anyhow::anyhow!("cargo {} failed for main project", cmd))
     }
 }
 
 /// Build the main project.
-fn build_main(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>) -> Result<()> {
+fn build_main(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &HashMap<String, String>) -> Result<()> {
     impl_cargo_exec_main(config, build_config, envs, "build")
 }
 
 /// Run the main project.
-fn run_main(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &std::collections::HashMap<String, String>) -> Result<()> {
+fn run_main(config: &Config, build_config : &cargo_toml::BuildConfig, envs : &HashMap<String, String>) -> Result<()> {
     impl_cargo_exec_main(config, build_config, envs, "run")
 }
 
 /// This prevents ignoring rust-toolchain.toml.
-fn get_filtered_env() -> std::collections::HashMap<String, String> {
-    std::env::vars().filter(|&(ref k, _)|
-        !(k.starts_with("CARGO_") || k.starts_with("RUSTUP_") || k.starts_with("RUST_"))
-    ).collect()
+fn get_filtered_env() -> HashMap<String, String> {
+    std::env::vars().filter(|&(ref k, _)| !(k.starts_with("CARGO_") || k.starts_with("RUSTUP_") || k.starts_with("RUST_"))).collect()
 }
 
 /// Build command
