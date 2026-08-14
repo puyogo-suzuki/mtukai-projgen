@@ -1,14 +1,18 @@
-use std::{collections::{HashMap, HashSet}, fmt::Debug, path::{Path, PathBuf}};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
+use ra_ap_base_db::SourceDatabase;
+use ra_ap_hir::Crate;
 use ra_ap_ide::{RootDatabase, Semantics, TextRange};
 use ra_ap_load_cargo::{load_workspace_at, LoadCargoConfig, ProcMacroServerChoice};
 use ra_ap_project_model::{CargoConfig, CargoFeatures};
 use ra_ap_vfs::VfsPath;
-use ra_ap_base_db::SourceDatabase;
-use ra_ap_hir::Crate;
 
-use crate::unused_analysis::use_elimination::UseInfo;
+use self::use_elimination::UseInfo;
 
 mod use_elimination;
 mod ast_collect;
@@ -40,7 +44,7 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Pa
         sysroot: Some(ra_ap_project_model::RustLibSource::Discover),
         target: target.as_ref().map(|t| t.as_ref().to_string()),
         all_targets,
-        features : if features.is_empty() {
+        features: if features.is_empty() {
             CargoFeatures::All
         } else {
             CargoFeatures::Selected {
@@ -66,7 +70,7 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Pa
 
     let source_root = root_db.source_root(
         root_db.file_source_root(root_krate.root_file(&root_db)).source_root_id(&root_db)
-    ).source_root(&root_db);  
+    ).source_root(&root_db);
 
     let gen_dir = workspace_root.join("generated");
     let tem_dir = workspace_root.join("template");
@@ -124,20 +128,21 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Pa
         collections.walk_dependency(&root_db);
         Some(collections)
     }).context("Failed to search the main function")?;
+
     let disabled_optional_deps = crates::collect_disabled_optional_deps(manifest_path, features);
     let mut ast_collect = ast_collect::AstCollect::new();
-    for file_id in source_root.iter() {
-        if let Some(path) = source_root.path_for_file(&file_id) { 
-            // exclude template and generated directory.
-            if gen_dir.as_ref().map(|d| !path.starts_with(&d)).unwrap_or(false)
-            && tem_dir.as_ref().map(|d| !path.starts_with(&d)).unwrap_or(false)
-            && let Some((_, Some("rs"))) = path.name_and_extension() {  
-                ra_ap_hir::attach_db(&root_db, || {
-                    ast_collect.collect_from_file(&file_id, &root_db, &root_krate, &disabled_optional_deps, features);
-                });
+
+    ra_ap_hir::attach_db(&root_db, || {
+        for file_id in source_root.iter() {
+            if let Some(path) = source_root.path_for_file(&file_id)
+                // exclude template and generated directory.
+                && gen_dir.as_ref().map(|d| !path.starts_with(d)).unwrap_or(false)
+                && tem_dir.as_ref().map(|d| !path.starts_with(d)).unwrap_or(false)
+                && let Some((_, Some("rs"))) = path.name_and_extension() {
+                ast_collect.collect_from_file(&file_id,&root_db,&root_krate,&disabled_optional_deps,features);
             }
         }
-    }
+    });
 
     check_used_functions_in_ast(&hircollect, &mut ast_collect, &root_db);
 
@@ -175,21 +180,44 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Pa
     Ok(ast_collect.into_unused_analysis_result(&vfs))
 }
 
+fn check_used_functions_in_ast(hircollect: &hir_collect::HirCollect, ast_collect: &mut ast_collect::AstCollect, db: &RootDatabase) {
+    let sema = Semantics::new(db);
+    for (f, visit) in hircollect.functions.iter() {
+        if let Some(source) = sema.source(f.clone()) {
+            let file_id = if let Some(mf) = source.file_id.macro_file() {
+                mf.loc(db).kind.original_call_range_with_input(db).file_id
+            } else {
+                source.file_id.original_file(db)
+            }.file_id(db);
+            if let Some((_, avi)) = ast_collect.get_function_info(file_id, &ast_collect::get_ast_fn_key(&source.value)) {
+                if visit.is_visited() {
+                    *avi = ast_collect::AstVisitInfo::Visited;
+                } else if *avi == ast_collect::AstVisitInfo::None { // Do not make it unused if it is already visited in HIR-level.
+                    *avi = ast_collect::AstVisitInfo::Unused; // It is recognized in HIR-level and unused.
+                }
+            }
+        }
+    }
+}
+
+/// Kind of the unused item.
 #[derive(Debug)]
 enum UnusedItemKind {
+    /// It is a function. 'fn'
     Function,
-    Use
+    /// It is a use statement. 'use'
+    Use,
 }
 
 /// Represents Unused Items
 #[derive(Debug)]
 struct UnusedItem {
     /// The function key
-    key : String,
+    key: String,
     /// The range of the function in the source code
-    text_range : TextRange,
+    text_range: TextRange,
     /// The kind of the unused item
-    kind : UnusedItemKind
+    kind: UnusedItemKind
 }
 
 impl UnusedItem {
@@ -219,6 +247,7 @@ impl Ord for UnusedItem {
     }
 }
 
+/// Represents the result of unused analysis.
 pub struct UnusedAnalysisResult {
     /// Ranges to be disabled.
     unuseds : HashMap<PathBuf, Vec<UnusedItem>>
@@ -233,8 +262,26 @@ impl UnusedAnalysisResult {
         Some(Self::impl_disabled_content(&src, items, cfg_feature.as_ref()))
     }
 
+    /// Get the content by using the analysis cache file.
+    /// If the cache file does not exist or is invalid, returns `None`.
+    pub fn get_disabled_content_by_file<P1: AsRef<Path>, P2: AsRef<Path>, S: AsRef<str>>(edition: ra_ap_syntax::Edition, path: P1, cache_path: P2, cfg_feature: S, features: &Vec<String>) -> Option<String> {
+        let cache = std::fs::read_to_string(cache_path.as_ref()).ok()?;
+        let unuseds : HashSet<_> = cache.split('\n').filter(|p| !p.trim().is_empty()).collect();
+
+        let src = std::fs::read_to_string(path.as_ref()).ok()?;
+        let parse = ra_ap_syntax::SourceFile::parse(&src, edition);
+        let file = parse.tree();
+        let mut collect = ast_collect::AstCollectFile::new_from_file(&file, use_elimination::from_cache_file(&file, &unuseds), features);
+        for (key, (_, avi)) in collect.functions.iter_mut() {
+            if *avi == ast_collect::AstVisitInfo::None && unuseds.contains(key.as_str()) {
+                *avi = ast_collect::AstVisitInfo::Unused;
+            }
+        }
+        Some(Self::impl_disabled_content(&src, &collect.into_vec_unuseditem(), cfg_feature.as_ref()))
+    }
+
     /// The disabled content is generated by adding `#[cfg(not(feature="cfg_feature"))]` attribute to the unused items.
-    fn impl_disabled_content(src_text: &str, unused_items: &Vec<UnusedItem>, cfg_feature: &str) -> String {
+    fn impl_disabled_content(src_text: &str, unused_items: &[UnusedItem], cfg_feature: &str) -> String {
         let cfg_str = format!("#[cfg(not(feature=\"{}\"))]\n", cfg_feature);
         let mut result = String::with_capacity(src_text.len() + unused_items.len() * cfg_str.len());
         let mut itr = 0;
@@ -269,44 +316,6 @@ impl UnusedAnalysisResult {
             result.push('\n');
         }
         Some(result)
-    }
-
-    /// Get the content by using the analysis cache file.
-    /// If the cache file does not exist or is invalid, returns `None`.
-    pub fn get_disabled_content_by_file<P1: AsRef<Path>, P2: AsRef<Path>, S: AsRef<str>>(edition: ra_ap_syntax::Edition, path: P1, cache_path: P2, cfg_feature: S, features: &Vec<String>) -> Option<String> {
-        let cache = std::fs::read_to_string(cache_path.as_ref()).ok()?;
-        let unuseds = cache.split('\n').filter(|p| !p.trim().is_empty()).collect::<HashSet<_>>();
-
-        let src = std::fs::read_to_string(path.as_ref()).ok()?;
-        let parse = ra_ap_syntax::SourceFile::parse(&src, edition);
-        let file = parse.tree();
-        let mut collect = ast_collect::AstCollectFile::new_from_file(&file, use_elimination::from_cache_file(&file, &unuseds), features);
-        for (key, (_, avi)) in collect.functions.iter_mut() {
-            if *avi == ast_collect::AstVisitInfo::None && unuseds.contains(key.as_str()) {
-                *avi = ast_collect::AstVisitInfo::Unused;
-            }
-        }
-        Some(Self::impl_disabled_content(&src, &collect.into_vec_unuseditem(), cfg_feature.as_ref()))
-    }
-}
-
-fn check_used_functions_in_ast(hircollect: &hir_collect::HirCollect, ast_collect: &mut ast_collect::AstCollect, db: &RootDatabase) {
-    let sema = Semantics::new(db);
-    for (f, visit) in hircollect.functions.iter() {
-        if let Some(source) = sema.source(f.clone()) {
-            let file_id = if let Some(mf) = source.file_id.macro_file() {
-                mf.loc(db).kind.original_call_range_with_input(db).file_id
-            } else {
-                source.file_id.original_file(db)
-            }.file_id(db);
-            if let Some((_, avi)) = ast_collect.get_function_info(file_id, &ast_collect::get_ast_fn_key(&source.value)) {
-                if visit.is_visited() {
-                    *avi = ast_collect::AstVisitInfo::Visited;
-                } else if *avi == ast_collect::AstVisitInfo::None { // Do not make it unused if it is already visited in HIR-level.
-                    *avi = ast_collect::AstVisitInfo::Unused; // It is recognized in HIR-level and unused.
-                }
-            }
-        }
     }
 }
 

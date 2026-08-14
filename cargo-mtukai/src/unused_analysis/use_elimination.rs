@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use ra_ap_base_db::SourceDatabase;
 use ra_ap_hir::{Crate, Semantics};
 use ra_ap_ide::{RootDatabase, TextRange};
-use ra_ap_syntax::{AstNode, ast::UseTree, algo, SyntaxKind};
+use ra_ap_syntax::{algo, ast::UseTree, AstNode, SyntaxKind};
 use ra_ap_vfs::FileId;
 
 #[derive(Debug)]
@@ -36,8 +36,7 @@ pub(crate) fn collect_imports(file : &ra_ap_syntax::SourceFile) -> Vec<UseInfo> 
         }
     }
     let mut v = vec![];
-    for u in file.syntax().descendants()
-        .filter_map(|node| ra_ap_syntax::ast::Use::cast(node)) {
+    for u in file.syntax().descendants().filter_map(ra_ap_syntax::ast::Use::cast) {
         v.push(UseInfo {
             syntax: u.syntax().clone(),
             import_tree: u.use_tree().map(|ut| go(&ut))
@@ -71,16 +70,13 @@ pub(super) fn unresolved_imports(
     let module = module[0];
     let mut diagnostics_acc = Vec::new();
     module.diagnostics(db, &mut diagnostics_acc, false);
-    let unresolveds = diagnostics_acc
+    let unresolveds : HashSet<_> = diagnostics_acc
         .into_iter()
-        .filter_map(|diagnostic| 
-            match diagnostic {
-                ra_ap_hir::AnyDiagnostic::UnresolvedImport(imp) => {
-                    Some((*imp).decl.value.text_range())
-                },
-                _ => None
-            }
-        ).collect::<HashSet<_>>();
+        .filter_map(|diagnostic| match diagnostic {
+            ra_ap_hir::AnyDiagnostic::UnresolvedImport(imp) => Some((*imp).decl.value.text_range()),
+            _ => None,
+        }).collect();
+
     if unresolveds.is_empty() {
         return Vec::new();
     }
@@ -121,7 +117,7 @@ pub(super) fn unresolved_imports(
             }
         }
     }
-    
+
     imps.into_iter()
         .filter_map(|UseInfo { syntax: syn, import_tree: it }| {
             it.and_then(|it| go(it, &unresolveds, disabled_optional_deps, true))
@@ -171,14 +167,14 @@ pub(super) fn from_cache_file(file_id: &ra_ap_syntax::SourceFile, unuseds: &Hash
             }
         }
     }
-    
+
     imps.into_iter()
         .filter_map(|UseInfo { syntax: syn, import_tree: it }| 
             it.and_then(|it| go(it, &unuseds, "")).map(|it|  UseInfo{ syntax: syn, import_tree: Some(it)})
-        ).collect::<Vec<_>>()
+        ).collect()
 }
 
-pub(super) fn into_vec_unuseditem(uses : &Vec<UseInfo>) -> Vec<super::UnusedItem> {
+pub(super) fn into_vec_unuseditem(uses: &[UseInfo]) -> Vec<super::UnusedItem> {
     let mut s = vec![];
     for u in uses {
         fn go<S: AsRef<str>>(imp: &ImportTree, s: S, res: &mut Vec<super::UnusedItem>) {
@@ -202,4 +198,15 @@ pub(super) fn into_vec_unuseditem(uses : &Vec<UseInfo>) -> Vec<super::UnusedItem
         }
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_top_level_name() {
+        assert_eq!(get_top_level_name("cargo_toml::CargoToml"), "cargo_toml");
+        assert_eq!(get_top_level_name("serde"), "serde");
+    }
 }
