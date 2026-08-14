@@ -209,4 +209,11 @@ mod tests {
         assert_eq!(get_top_level_name("cargo_toml::CargoToml"), "cargo_toml");
         assert_eq!(get_top_level_name("serde"), "serde");
     }
+
+    #[test]
+    fn test_concat_path() {
+        assert_eq!(concat_path("", &Some("foo".into())), "foo");
+        assert_eq!(concat_path("foo", &Some("bar".into())), "foo::bar");
+        assert_eq!(concat_path("foo", &None), "foo");
+    }
 }

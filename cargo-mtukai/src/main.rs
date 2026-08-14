@@ -29,11 +29,11 @@ impl Config {
     fn new(manifest_path: Option<PathBuf>, output_dir: Option<PathBuf>, build_name: Option<String>, release: bool, verbose: bool) -> Self {
         let manifest = 
             manifest_path
-                .and_then(|p| {
+                .map(|p| {
                     if p.is_file() && let Some(parent) = p.parent() {
-                        Some(parent.to_path_buf())
+                        parent.to_path_buf()
                     } else {
-                        Some(p.to_path_buf())
+                        p.to_path_buf()
                     }
                 }).unwrap_or_else(|| PathBuf::from("./"));
         let destination_path = manifest.join(output_dir.clone().unwrap_or_else(|| PathBuf::from(GEN_DIR)));

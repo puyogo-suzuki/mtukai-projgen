@@ -20,38 +20,6 @@ pub(super) struct AstCollectFile {
 impl AstCollectFile {
     /// Returns a new `AstCollectFile` instance by collecting function information from the given `file`.
     pub(super) fn new_from_file(file: &ra_ap_syntax::SourceFile, unresolved_imports: Vec<UseInfo>, features: &[String]) -> AstCollectFile {
-        // Check if the function has a `#[panic_handler]` attribute.
-        // panic_handlers are used.
-        fn has_panic_handler(func: &ast::Fn) -> bool {
-            func.attrs().any(|attr| {
-                attr.path().map(|p| p.syntax().text().to_string() == "panic_handler").unwrap_or(false)
-            })
-        }
-        fn has_undead_macro(func: &ast::Fn, features: &[String]) -> bool {
-            const MACRO_NAME: &str = "mtukai_projgen_undead";
-            func.attrs().any(|attr| {
-                if let Some(path) = attr.path() {
-                    if !path.segment().and_then(|s| s.name_ref()).map(|n| n.text() == MACRO_NAME).unwrap_or(false) && // #[mtukai_projgen_procmacro::mtukai_projgen_undead]
-                        !path.as_single_name_ref().map(|s| s.text() == MACRO_NAME).unwrap_or(false) { // #[mtukai_projgen_undead]
-                        return false;
-                    }
-                    if let Some(tt) = attr.meta().and_then(|t| match t { ast::Meta::TokenTreeMeta(t) => t.token_tree(), _ => None }) {
-                        // #[mtukai_projgen_procmacro::mtukai_projgen_undead("foo", "bar")]
-                        tt.token_trees_and_tokens()  
-                            .filter_map(|it| it.into_token().and_then(ast::String::cast))  
-                            .any(|s| {
-                                let f = s.text().to_string();
-                                let f = f.chars().skip(1).take(f.len() - 2).collect::<String>(); // Get Foo from "Foo".
-                                features.contains(&f)
-                            })
-                    } else {  // #[mtukai_projgen_procmacro::mtukai_projgen_undead]
-                        true // No features specified, so it is always undead.
-                    }
-                } else {
-                    false // Unknown!
-                }
-            })
-        }
         fn visit_state(func: &ast::Fn, features: &[String]) -> AstVisitInfo {
             if has_panic_handler(func) || has_undead_macro(func, features) {
                 AstVisitInfo::Visited
@@ -198,4 +166,151 @@ pub(super) fn get_ast_fn_key(func: &ast::Fn) -> String {
     parts.reverse();
     parts.push(format!("fn:{}", fn_name));
     parts.join("::")
+}
+
+// Check if the function has a `#[panic_handler]` attribute.
+// panic_handlers are used.
+fn has_panic_handler(func: &ast::Fn) -> bool {
+    func.attrs().any(|attr| {
+        attr.path().map(|p| p.syntax().text().to_string() == "panic_handler").unwrap_or(false)
+    })
+}
+
+fn has_undead_macro(func: &ast::Fn, features: &[String]) -> bool {
+    const MACRO_NAME: &str = "mtukai_projgen_undead";
+    func.attrs().any(|attr| {
+        if let Some(path) = attr.path() {
+            if !path.segment().and_then(|s| s.name_ref()).map(|n| n.text() == MACRO_NAME).unwrap_or(false) && // #[mtukai_projgen_procmacro::mtukai_projgen_undead]
+                !path.as_single_name_ref().map(|s| s.text() == MACRO_NAME).unwrap_or(false) { // #[mtukai_projgen_undead]
+                return false;
+            }
+            if let Some(tt) = attr.meta().and_then(|t| match t { ast::Meta::TokenTreeMeta(t) => t.token_tree(), _ => None }) {
+                // #[mtukai_projgen_procmacro::mtukai_projgen_undead("foo", "bar")]
+                tt.token_trees_and_tokens()  
+                    .filter_map(|it| it.into_token().and_then(ast::String::cast))  
+                    .any(|s| {
+                        let f = s.text().to_string();
+                        let f = f.chars().skip(1).take(f.len() - 2).collect::<String>(); // Get Foo from "Foo".
+                        features.contains(&f)
+                    })
+            } else {  // #[mtukai_projgen_procmacro::mtukai_projgen_undead]
+                true // No features specified, so it is always undead.
+            }
+        } else {
+            false // Unknown!
+        }
+    })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_simple_fns() {
+        let code = "
+            fn foo() {}
+            fn bar() {}
+            fn baz() {}
+        ";
+        let c = ra_ap_syntax::SourceFile::parse(code, ra_ap_syntax::Edition::DEFAULT);
+        let mut ac = AstCollectFile::new_from_file(&c.tree(), vec![], &[]);
+        assert!(ac.functions.iter().all(|(_, (fn_, _))| {
+            let fname = fn_.name().map(|n| n.text().to_string()).unwrap_or_default();
+            fname == "foo" || fname == "bar" || fname == "baz"
+        }), "Function names should be 'foo', 'bar', and 'baz'");
+        assert!(ac.functions.iter().all(|(f, _)| {
+            f == "fn:foo" || f == "fn:bar" || f == "fn:baz"
+        }), "Function keys should be 'fn:foo', 'fn:bar', and 'fn:baz'");
+        assert!(ac.functions.iter().all(|(_, (_, visit))| {
+            *visit == AstVisitInfo::None
+        }), "All functions should have visit state 'None'");
+        {
+            let (_, v) = ac.functions.get_mut("fn:bar").unwrap();
+            *v = AstVisitInfo::Visited;
+            let (_, v) = ac.functions.get_mut("fn:baz").unwrap();
+            *v = AstVisitInfo::Unused;
+        }
+        let unused_items = ac.into_vec_unuseditem();
+        assert_eq!(unused_items.len(), 1, "There should be one unused item");
+        assert_eq!(unused_items[0].key, "fn:baz", "Only 'baz' should be marked as unused");
+    }
+
+    #[test]
+    fn test_impl_trait_fns() {
+        let code = "
+            struct MyStruct {}
+            trait MyTrait {
+                fn trait_fn(&self);
+                fn default_fn(&self) {}
+            }
+            impl MyTrait for MyStruct {
+                fn trait_fn(&self) {}
+            }
+            impl MyStruct {
+                fn assoc_fn(&self) {}
+            }
+        ";
+        let c = ra_ap_syntax::SourceFile::parse(code, ra_ap_syntax::Edition::DEFAULT);
+        let ac = AstCollectFile::new_from_file(&c.tree(), vec![], &[]);
+        assert!(ac.functions.iter().any(|(f, _)| f == "trait:MyTrait::fn:default_fn"), "Function 'default_fn' should be collected");
+        assert!(ac.functions.iter().any(|(f, _)| f == "impl:MyTrait:for:MyStruct::fn:trait_fn"), "Function 'trait_fn' in impl should be collected");
+        assert!(ac.functions.iter().any(|(f, _)| f == "impl:MyStruct::fn:assoc_fn"), "Function 'assoc_fn' in impl should be collected");
+    }
+
+    #[test]
+    fn test_panic_handler() {
+        let code = "
+            #[panic_handler]
+            fn foo() {}
+            fn bar() {}
+        ";
+        let c = ra_ap_syntax::SourceFile::parse(code, ra_ap_syntax::Edition::DEFAULT);
+        let mut tree = c.tree().items();
+        let foo = match tree.next().unwrap() {
+            ast::Item::Fn(func) => func,
+            _ => panic!("Expected a function item"),
+        };
+        assert!(has_panic_handler(&foo), "Function 'foo' should have a panic_handler attribute");
+        let bar = match tree.next().unwrap() {
+            ast::Item::Fn(func) => func,
+            _ => panic!("Expected a function item"),
+        };
+        assert!(!has_panic_handler(&bar), "Function 'bar' should not have a panic_handler attribute");
+    }
+
+    #[test]
+    fn test_undead_macro() {
+        let code = "
+            #[mtukai_projgen_undead(\"feature1\")]
+            fn foo() {}
+            #[mtukai_projgen_undead]
+            fn bar() {}
+            fn baz() {}
+            #[mtukai_projgen_undead(\"feature2\")]
+            fn qux() {}
+        ";
+        let c = ra_ap_syntax::SourceFile::parse(code, ra_ap_syntax::Edition::DEFAULT);
+        let mut tree = c.tree().items();
+        let foo = match tree.next().unwrap() {
+            ast::Item::Fn(func) => func,
+            _ => panic!("Expected a function item"),
+        };
+        assert!(has_undead_macro(&foo, &["feature1".to_string()]), "Function 'foo' should have an undead macro with feature1");
+        let bar = match tree.next().unwrap() {
+            ast::Item::Fn(func) => func,
+            _ => panic!("Expected a function item"),
+        };
+        assert!(has_undead_macro(&bar, &[]), "Function 'bar' should have an undead macro without features");
+        let baz = match tree.next().unwrap() {
+            ast::Item::Fn(func) => func,
+            _ => panic!("Expected a function item"),
+        };
+        assert!(!has_undead_macro(&baz, &[]), "Function 'baz' should not have an undead macro");
+        let qux = match tree.next().unwrap() {
+            ast::Item::Fn(func) => func,
+            _ => panic!("Expected a function item"),
+        };
+        assert!(!has_undead_macro(&qux, &["feature1".to_string()]), "Function 'qux' should not have an undead macro with feature1");
+    }
 }
