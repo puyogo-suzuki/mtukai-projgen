@@ -190,7 +190,7 @@ impl HirCollect {
         db: &RootDatabase,
         syntax: &ra_ap_syntax::SyntaxNode,
         walkqueue: &mut Vec<ra_ap_hir::Function>,
-        sema: &Semantics<RootDatabase>,
+        sema: &Semantics<RootDatabase>
     ) {
         for expr in syntax.descendants().filter_map(ast::CallableExpr::cast) {
             match expr {
@@ -216,6 +216,41 @@ impl HirCollect {
             }
         }
 
+        // // Binary operators (e.g. a + b -> Add::add, a == b -> PartialEq::eq)
+        // for bin_expr in syntax.descendants().filter_map(ast::BinExpr::cast) {
+        //     if let Some(resolved) = sema.resolve_bin_expr(&bin_expr) {
+        //         self.queue_function(db, resolved, walkqueue);
+        //     }
+        // }
+
+        // // Unary/Prefix operators (e.g. -a -> Neg::neg, !a -> Not::not, *a -> Deref::deref)
+        // for prefix_expr in syntax.descendants().filter_map(ast::PrefixExpr::cast) {
+        //     if let Some(resolved) = sema.resolve_prefix_expr(&prefix_expr) {
+        //         self.queue_function(db, resolved, walkqueue);
+        //     }
+        // }
+
+        // // Index operators (e.g. a[i] -> Index::index / IndexMut::index_mut)
+        // for index_expr in syntax.descendants().filter_map(ast::IndexExpr::cast) {
+        //     if let Some(resolved) = sema.resolve_index_expr(&index_expr) {
+        //         self.queue_function(db, resolved, walkqueue);
+        //     }
+        // }
+
+        // // Try operator (e.g. expr? -> Try::branch / From::from)
+        // for try_expr in syntax.descendants().filter_map(ast::TryExpr::cast) {
+        //     if let Some(resolved) = sema.resolve_try_expr(&try_expr) {
+        //         self.queue_function(db, resolved, walkqueue);
+        //     }
+        // }
+
+        // // Await operator (e.g. fut.await -> Future::poll)
+        // for await_expr in syntax.descendants().filter_map(ast::AwaitExpr::cast) {
+        //     if let Some(resolved) = sema.resolve_await_to_poll(&await_expr) {
+        //         self.queue_function(db, resolved, walkqueue);
+        //     }
+        // }
+
         // Higher-order functions
         for pr in syntax.descendants()
             .filter_map(ast::PathExpr::cast)
@@ -224,5 +259,36 @@ impl HirCollect {
                 self.queue_function(db, resolved, walkqueue);
             }
         }
+
+        // // Implicit Deref Coercions (e.g. function arguments, autoderef on method/field access)
+        // for adjust in syntax
+        //     .descendants()
+        //     .filter_map(ast::Expr::cast)
+        //     .filter_map(|expr| sema.expr_adjustments(&expr))
+        //     .flatten()
+        // {
+        //     match adjust.kind {
+        //         ra_ap_hir::Adjust::Deref(Some(overloaded))  => {
+        //             self.queue_types(&adjust.source, walkqueue, db);
+        //             let target_trait = match overloaded.0 {
+        //                 ra_ap_hir::Mutability::Shared => "Deref",
+        //                 ra_ap_hir::Mutability::Mut => "DerefMut",
+        //             };
+        //             for item in ra_ap_hir::Impl::all_for_type(db, adjust.source.clone())
+        //                 .into_iter()
+        //                 .filter(|imp| imp.trait_(db).map(|t| t.name(db).as_str() == target_trait).unwrap_or(false))
+        //                 .flat_map(|imp| imp.items(db))
+        //             {
+        //                 match item {
+        //                     ra_ap_hir::AssocItem::Function(func) => {
+        //                         self.queue_function(db, func, walkqueue);
+        //                     },
+        //                     _ => {}
+        //                 }
+        //             }
+        //         },
+        //         _ => {}
+        //     }
+        // }
     }
 }
