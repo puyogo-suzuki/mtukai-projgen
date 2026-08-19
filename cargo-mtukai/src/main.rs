@@ -22,11 +22,12 @@ struct Config {
     template_name: RefCell<Option<String>>,
     build_name : String,
     release: bool,
-    verbose: bool
+    verbose: bool,
+    force_unused_analysis: bool
 }
 
 impl Config {
-    fn new(manifest_path: Option<PathBuf>, output_dir: Option<PathBuf>, build_name: Option<String>, release: bool, verbose: bool) -> Self {
+    fn new(manifest_path: Option<PathBuf>, output_dir: Option<PathBuf>, build_name: Option<String>, release: bool, verbose: bool, force_unused_analysis: bool) -> Self {
         let manifest = 
             manifest_path
                 .map(|p| {
@@ -43,7 +44,8 @@ impl Config {
             template_name: RefCell::new(None),
             build_name: build_name.unwrap_or_else(|| "default".to_string()),
             release,
-            verbose
+            verbose,
+            force_unused_analysis
         }
     }
     fn get_destination_path(&self) -> &PathBuf {
@@ -92,6 +94,8 @@ struct Args {
     release: bool,
     #[arg(short, long)]
     verbose: bool,
+    #[arg(long)]
+    force_unused_analysis: bool
 }
 
 #[derive(Subcommand, Debug)]
@@ -111,7 +115,7 @@ enum Commands {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let conf = Config::new(args.manifest_path, args.output_dir, args.build_name, args.release, args.verbose);
+    let conf = Config::new(args.manifest_path, args.output_dir, args.build_name, args.release, args.verbose, args.force_unused_analysis);
     match args.command {
         Commands::Gen { cargo_toml } => cmd_gen(&conf, cargo_toml).map(|_| ()),
         Commands::Build {} => cmd_build(&conf).map(|_| ()),
@@ -141,7 +145,7 @@ fn cmd_gen(config: &Config, cargo_toml: bool) -> Result<cargo_toml::CargoToml> {
         println!("LP Cargo.toml:\n{}", cargo_toml_data.generate_lp_file(&config.manifest)?);
         return Ok(cargo_toml_data);
     }
-    gen_projects(config, &cargo_toml_data, false)?;
+    gen_projects(config, &cargo_toml_data, config.force_unused_analysis)?;
     println!("Full project clone completed.");
     Ok(cargo_toml_data)
 }
