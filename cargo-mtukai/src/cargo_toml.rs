@@ -56,7 +56,8 @@ pub struct CargoToml {
     /// Raw Cargo.toml document
     doc: DocumentMut,
     /// Crate name
-    name: String,
+    // name: String,
+
     /// Rust Edition
     edition: String,
     /// Unused elimination flag. If true, the unused code will be eliminated during the build process.
@@ -73,11 +74,11 @@ impl CargoToml {
     pub fn new<P : AsRef<Path>>(path: P) -> Result<CargoToml> {
         let content = std::fs::read_to_string(path)?;
         let doc : DocumentMut = content.parse()?;
-        let name = doc["package"]["name"].as_str().context("Name is missing")?.to_string();
+        // let name = doc["package"]["name"].as_str().context("Name is missing")?.to_string();
         let edition = doc["package"]["edition"].as_str().unwrap_or("2024").to_string();
         let enable_unused_elimination = doc["package"]["metadata"]["mtukai"]["unused_elimination"].as_bool().unwrap_or(false);
         let build_configs = Self::read_build_configs(&doc)?;
-        Ok(CargoToml { doc, name, edition, enable_unused_elimination, build_configs })
+        Ok(CargoToml { doc, /*name,*/ edition, enable_unused_elimination, build_configs })
     }
 
     /// Get the build configuration by name.

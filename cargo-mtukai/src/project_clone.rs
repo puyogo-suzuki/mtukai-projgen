@@ -5,6 +5,7 @@ use walkdir::WalkDir;
 
 pub enum CopyingDecision {
     /// Do not copy the file, Remove it.
+    #[allow(unused)]
     DontCopy,
     /// Ignore the file, do not update.
     Ignore,
