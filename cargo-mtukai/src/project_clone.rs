@@ -71,6 +71,9 @@ fn requires_update(src: &Path, dst: &Path) -> Result<bool> {
 
 /// Make the file readonly.
 fn set_readonly(path: &Path, readonly: bool) -> Result<()> {
+    if path.is_symlink() {
+        return Ok(()); // Do not change the permission of symbolic links.
+    }
     let mut perms = fs::metadata(path)?.permissions();
     perms.set_readonly(readonly);
     fs::set_permissions(path, perms)?;
