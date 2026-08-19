@@ -169,7 +169,7 @@ fn gen_projects(config: &Config, cargo_toml: &cargo_toml::CargoToml, enable_anal
 /// Generate arguments given for cargo.
 fn gen_args<S: AsRef<str>>(command : S, build_parameter : &BuildParameter, release : bool) -> Result<Vec<String>> {
     let mut args = vec![command.as_ref().to_owned()];
-    if let Some(target) = &build_parameter.target {
+    if let Some(target) = &build_parameter.target && !target.is_empty(){
         args.push(format!("--target={}", target));
     }
     if let Some(features) = &build_parameter.features {

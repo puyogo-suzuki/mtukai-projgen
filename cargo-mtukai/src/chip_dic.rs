@@ -74,6 +74,19 @@ pub fn get_conf_by_chip_name<S: AsRef<str>>(chip_name: S) -> Option<ChipConf> {
             },
             template: "esp32s3"
         }),
+        "posix" => Some(ChipConf {
+            main: ChipConfParams {
+                target: "",
+                features: "",
+                args: "",
+            },
+            lp: ChipConfParams {
+                target: "",
+                features: "",
+                args: "",
+            },
+            template: "posix"
+        }),
         _ => None
     }
 }
