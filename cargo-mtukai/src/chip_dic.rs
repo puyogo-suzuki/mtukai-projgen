@@ -6,6 +6,8 @@ pub struct ChipConfParams {
     pub features : &'static str,
     /// Additional arguments for the target chip
     pub args : &'static str,
+    /// Entry Point Name
+    pub entry_point : Option<&'static str>,
 }
 
 /// Chip configuration for a specific chip
@@ -27,11 +29,13 @@ pub fn get_conf_by_chip_name<S: AsRef<str>>(chip_name: S) -> Option<ChipConf> {
                 target: "riscv32imac-unknown-none-elf",
                 features: "esp32c6",
                 args: "",
+                entry_point: None
             },
             lp: ChipConfParams {
                 target: "riscv32imac-unknown-none-elf",
                 features: "esp32c6",
                 args: "",
+                entry_point: Some("__risc_v_rt__main")
             },
             template: "esp32c6"
         }),
@@ -40,11 +44,13 @@ pub fn get_conf_by_chip_name<S: AsRef<str>>(chip_name: S) -> Option<ChipConf> {
                 target: "riscv32imac-unknown-none-elf",
                 features: "esp32c5",
                 args: "",
+                entry_point: None
             },
             lp: ChipConfParams {
                 target: "riscv32imac-unknown-none-elf",
                 features: "esp32c5",
                 args: "",
+                entry_point: Some("__risc_v_rt__main")
             },
             template: "esp32c5"
         }),
@@ -53,11 +59,13 @@ pub fn get_conf_by_chip_name<S: AsRef<str>>(chip_name: S) -> Option<ChipConf> {
                 target: "riscv32imac-unknown-none-elf",
                 features: "esp32p4",
                 args: "",
+                entry_point: None
             },
             lp: ChipConfParams {
                 target: "riscv32imac-unknown-none-elf",
                 features: "esp32p4",
                 args: "",
+                entry_point: Some("__risc_v_rt__main")
             },
             template: "esp32p4"
         }),
@@ -66,11 +74,13 @@ pub fn get_conf_by_chip_name<S: AsRef<str>>(chip_name: S) -> Option<ChipConf> {
                 target: "xtensa-esp32s3-none-elf",
                 features: "esp32s3",
                 args: "",
+                entry_point: None
             },
             lp: ChipConfParams {
                 target: "riscv32imc-unknown-none-elf",
                 features: "esp32s3",
                 args: "",
+                entry_point: Some("__risc_v_rt__main")
             },
             template: "esp32s3"
         }),
@@ -79,11 +89,13 @@ pub fn get_conf_by_chip_name<S: AsRef<str>>(chip_name: S) -> Option<ChipConf> {
                 target: "",
                 features: "",
                 args: "",
+                entry_point: None
             },
             lp: ChipConfParams {
                 target: "",
                 features: "",
                 args: "",
+                entry_point: None
             },
             template: "posix"
         }),

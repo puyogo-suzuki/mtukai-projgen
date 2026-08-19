@@ -20,6 +20,8 @@ pub struct BuildParameter {
     pub features : Option<String>,
     /// Additional arguments to cargo
     pub args : Option<String>,
+    /// Entry point name
+    pub entry_point : Option<String>,
     /// Is release build?
     pub release : bool
 }
@@ -93,19 +95,20 @@ impl CargoToml {
     /// `release_default` is 
     fn read_build_parameters(item: Option<&toml_edit::InlineTable>, chip_conf: &Option<crate::chip_dic::ChipConfParams>, release_default : bool) -> BuildParameter {
         // Check if the `chip` is available.
-        let (target, features, args) = match chip_conf {
-            Some(crate::chip_dic::ChipConfParams { target, features, args }) => (Some(target.to_owned().to_owned()), Some(features.to_owned().to_owned()), Some(args.to_owned().to_owned())),
-            None => (None, None, None)
+        let (target, features, args, entry_point) = match chip_conf {
+            Some(crate::chip_dic::ChipConfParams { target, features, args , entry_point}) => (Some(target.to_owned().to_owned()), Some(features.to_owned().to_owned()), Some(args.to_owned().to_owned()), entry_point.map(|s| s.to_owned())),
+            None => (None, None, None, None)
         };
         // Check the inline table is available.
         if let Some(item) = item {
             let target = item.get("target").and_then(|v| v.as_str()).map(|s| s.to_string()).or(target);
             let features = item.get("features").and_then(|v| v.as_str()).map(|s| s.to_string()).or(features);
             let args = item.get("args").and_then(|v| v.as_str()).map(|s| s.to_string()).or(args);
+            let entry_point = item.get("entry_point").and_then(|v| v.as_str()).map(|s| s.to_string()).or(entry_point);
             let release = item.get("release").and_then(|v| v.as_bool()).unwrap_or(release_default);
-            BuildParameter { target, features, args, release }
+            BuildParameter { target, features, args, entry_point, release }
         } else {
-            BuildParameter { target, features, args, release: release_default }
+            BuildParameter { target, features, args, entry_point, release: release_default }
         }
     }
 

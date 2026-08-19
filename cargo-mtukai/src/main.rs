@@ -155,8 +155,8 @@ fn gen_projects(config: &Config, cargo_toml: &cargo_toml::CargoToml, enable_anal
         features_lp.push("is-lp-core".to_string());
         features_main.push("has-lp-core".to_string());
         (
-            unused_analysis::analyze_unused(&config.manifest, &buildconf.lp_params.target, &features_lp, Some("__risc_v_rt__main")).ok(),
-            unused_analysis::analyze_unused(&config.manifest, &buildconf.main_params.target, &features_main, None::<&str>).ok()
+            unused_analysis::analyze_unused(&config.manifest, &buildconf.lp_params.target, &features_lp, &buildconf.lp_params.entry_point).ok(),
+            unused_analysis::analyze_unused(&config.manifest, &buildconf.main_params.target, &features_main, &buildconf.main_params.entry_point).ok()
         )
     } else {
         (None, None)
