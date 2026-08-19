@@ -176,6 +176,7 @@ fn has_panic_handler(func: &ast::Fn) -> bool {
     })
 }
 
+// Check if the function has a `#[mtukai_projgen_undead]` attribute.
 fn has_undead_macro(func: &ast::Fn, features: &[String]) -> bool {
     const MACRO_NAME: &str = "mtukai_projgen_undead";
     func.attrs().any(|attr| {
@@ -202,6 +203,17 @@ fn has_undead_macro(func: &ast::Fn, features: &[String]) -> bool {
     })
 }
 
+// Check if the function has a `#[cfg(...)]` attribute that cares about "is-lp-core" or "has-lp-core".
+fn is_cares_by_cfg(func: &ast::Fn) -> bool {
+    func.attrs().any(|attr| {
+        if let Some(ast::Meta::CfgMeta(_)) = attr.meta() {
+            let str = attr.syntax().text().to_string();
+            str.contains("\"is-lp-core\"") || str.contains("\"has-lp-core\"")
+        } else {
+            false
+        }
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -312,5 +324,40 @@ mod tests {
             _ => panic!("Expected a function item"),
         };
         assert!(!has_undead_macro(&qux, &["feature1".to_string()]), "Function 'qux' should not have an undead macro with feature1");
+    }
+    #[test]
+    fn test_cfg_cares() {
+        let code = "
+            #[cfg(feature = \"not-is-lp-core\")]
+            fn foo() {}
+            #[cfg(feature = \"is-lp-core\")]
+            fn bar() {}
+            #[cfg(any(feature = \"is-lp-core\"))]
+            fn baz() {}
+            #[cfg(is-lp-core)]
+            fn qux() {}
+        ";
+        let c = ra_ap_syntax::SourceFile::parse(code, ra_ap_syntax::Edition::DEFAULT);
+        let mut tree = c.tree().items();
+        let foo = match tree.next().unwrap() {
+            ast::Item::Fn(func) => func,
+            _ => panic!("Expected a function item"),
+        };
+        assert!(!is_cares_by_cfg(&foo), "Function 'foo' does not have a cfg attribute that cares about is-lp-core");
+        let bar = match tree.next().unwrap() {
+            ast::Item::Fn(func) => func,
+            _ => panic!("Expected a function item"),
+        };
+        assert!(is_cares_by_cfg(&bar), "Function 'bar' have a cfg attribute that cares about is-lp-core");
+        let baz = match tree.next().unwrap() {
+            ast::Item::Fn(func) => func,
+            _ => panic!("Expected a function item"),
+        };
+        assert!(is_cares_by_cfg(&baz), "Function 'baz' have a complex cfg attribute that cares about is-lp-core");
+        let qux = match tree.next().unwrap() {
+            ast::Item::Fn(func) => func,
+            _ => panic!("Expected a function item"),
+        };
+        assert!(!is_cares_by_cfg(&qux), "Function 'qux' should not have a cfg attribute that cares about is-lp-core");
     }
 }
