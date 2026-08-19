@@ -129,7 +129,7 @@ fn cmd_debug(config: &Config) -> Result<()> {
     let mut features = cargo_toml_data.get_build_config(&config.build_name)
         .ok_or_else(|| anyhow::anyhow!("Build configuration not found"))?.lp_params.get_features_vec();
     features.push("is-lp-core".to_string());
-    unused_analysis::analyze_unused(&config.manifest, &Some("riscv32imac-unknown-none-elf"), &features, Some("__risc_v_rt__main"))?;
+    unused_analysis::analyze_unused(&config.manifest, &Some("riscv32imac-unknown-none-elf"), &features, &Some("__risc_v_rt__main"))?;
     Ok(())
 }
 
