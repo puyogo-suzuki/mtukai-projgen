@@ -29,11 +29,11 @@ mod crates;
 /// Aanalyze to detect the unused items.
 /// `features` must be comma-separated list of features to enable. If empty, all features are enabled.
 /// `entry_point_name` is the name of the entry point function. If None, the main function is used as the entry point.
-pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Path, target: &Option<S1>, features: &Vec<String>, entry_point_name : Option<S2>) -> Result<UnusedAnalysisResult> {
+pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Path, target: &Option<S1>, features: &Vec<String>, entry_point_name : &Option<S2>) -> Result<UnusedAnalysisResult> {
     let root_crate_root = if manifest_path.is_file() {
         manifest_path.parent().unwrap_or(manifest_path)
     } else {
-        manifest_path
+        &manifest_path
     };
     let workspace_root = root_crate_root
         .canonicalize()
@@ -65,13 +65,22 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Pa
     let (root_db, vfs, _) = load_workspace_at(&workspace_root.as_path(), &cargo_config, &load_config, &|_| {})?;
     let workspace_root = VfsPath::new_real_path(
         workspace_root.to_str().ok_or_else(|| anyhow::anyhow!("failed to convert workspace root to string"))?.to_owned());
-    let bin_root = workspace_root.join("src").and_then(|p| p.join("bin")).and_then(|p| p.join("main.rs")).and_then(|p| vfs.file_id(&p)).context("The rust root source file is not found")?.0;
+    let bin_root = if let Some(src_root) = workspace_root.join("src") {
+        if let Some((bin_root, _)) = src_root.join("bin").and_then(|p| p.join("main.rs")).and_then(|p| vfs.file_id(&p)) {
+            bin_root
+        } else if let Some((src_root, _)) = src_root.join("main.rs").and_then(|p| vfs.file_id(&p)) {
+            src_root
+        } else {
+            return Err(anyhow::anyhow!("Failed to find main.rs"));
+        }
+    } else {
+        return Err(anyhow::anyhow!("Failed to find src directory. Is this a valid Rust project?"));
+    };
     let root_krate = Crate::all(&root_db).into_iter().find(|c| c.root_file(&root_db) == bin_root).context("not found ")?;
 
     let source_root = root_db.source_root(
         root_db.file_source_root(root_krate.root_file(&root_db)).source_root_id(&root_db)
     ).source_root(&root_db);
-
     let gen_dir = workspace_root.join("generated");
     let tem_dir = workspace_root.join("template");
     // for file_id in source_root.iter() {

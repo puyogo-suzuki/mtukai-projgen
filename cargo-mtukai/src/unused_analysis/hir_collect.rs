@@ -43,7 +43,7 @@ pub(super) struct HirCollect {
 
 impl HirCollect {
     /// Construct 'HirCollect'. Return `None` if the entry point function is not found.
-    pub(super) fn new<S: AsRef<str>>(root_krate: &Crate, db: &RootDatabase, entrypoint_name : Option<S>) -> Option<Self> {
+    pub(super) fn new<S: AsRef<str>>(root_krate: &Crate, db: &RootDatabase, entrypoint_name : &Option<S>) -> Option<Self> {
         let mut result = HirCollect {
             functions: HashMap::new(),
             traits: HashMap::new(),
@@ -54,7 +54,7 @@ impl HirCollect {
         let sema = Semantics::new(db);
         let mut found_main = false;
         for m in root_krate.modules(db) {
-            found_main |= result.do_module(m, &sema, db, &entrypoint_name);
+            found_main |= result.do_module(m, &sema, db, entrypoint_name);
         }
         found_main.then_some(result)
     }

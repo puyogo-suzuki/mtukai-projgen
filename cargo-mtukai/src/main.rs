@@ -94,7 +94,7 @@ struct Args {
     release: bool,
     #[arg(short, long)]
     verbose: bool,
-    #[arg(long)]
+    #[arg(long = "force-unused-analysis", help = "Force unused code analysis even if the build configuration does not enable it.")]
     force_unused_analysis: bool
 }
 
@@ -158,10 +158,21 @@ fn gen_projects(config: &Config, cargo_toml: &cargo_toml::CargoToml, enable_anal
         let mut features_main = features_lp.clone();
         features_lp.push("is-lp-core".to_string());
         features_main.push("has-lp-core".to_string());
-        (
-            unused_analysis::analyze_unused(&config.manifest, &buildconf.lp_params.target, &features_lp, &buildconf.lp_params.entry_point).ok(),
-            unused_analysis::analyze_unused(&config.manifest, &buildconf.main_params.target, &features_main, &buildconf.main_params.entry_point).ok()
-        )
+        let lp_result = match unused_analysis::analyze_unused(&config.manifest, &buildconf.lp_params.target, &features_lp, &buildconf.lp_params.entry_point) {
+            Ok(result) => Some(result),
+            Err(e) => {
+                vprintln!(config, "Unused code analysis failed for LP project. Proceeding without unused code elimination.:\n{}", format!("{:?}", e));
+                None
+            }
+        };
+        let main_result = match unused_analysis::analyze_unused(&config.manifest, &buildconf.main_params.target, &features_main, &buildconf.main_params.entry_point) {
+            Ok(result) => Some(result),
+            Err(e) => {
+                vprintln!(config, "Unused code analysis failed for main project. Proceeding without unused code elimination.:\n{}", format!("{:?}", e));
+                None
+            }
+        };
+        (lp_result, main_result)
     } else {
         (None, None)
     };
