@@ -1,7 +1,7 @@
 /// Chip configuration parameters
 pub struct ChipConfParams {
     /// Target chip
-    pub target : &'static str,
+    pub target : Option<&'static str>,
     /// Features for the target chip
     pub features : &'static str,
     /// Additional arguments for the target chip
@@ -26,13 +26,13 @@ pub fn get_conf_by_chip_name<S: AsRef<str>>(chip_name: S) -> Option<ChipConf> {
     match chip_name.as_ref().to_lowercase().as_str() {
         "esp32c6" | "esp32-c6" => Some(ChipConf {
             main: ChipConfParams {
-                target: "riscv32imac-unknown-none-elf",
+                target: Some("riscv32imac-unknown-none-elf"),
                 features: "esp32c6",
                 args: "",
                 entry_point: None
             },
             lp: ChipConfParams {
-                target: "riscv32imac-unknown-none-elf",
+                target: Some("riscv32imac-unknown-none-elf"),
                 features: "esp32c6",
                 args: "",
                 entry_point: Some("__risc_v_rt__main")
@@ -41,13 +41,13 @@ pub fn get_conf_by_chip_name<S: AsRef<str>>(chip_name: S) -> Option<ChipConf> {
         }),
         "esp32c5" | "esp32-c5" => Some(ChipConf {
             main: ChipConfParams {
-                target: "riscv32imac-unknown-none-elf",
+                target: Some("riscv32imac-unknown-none-elf"),
                 features: "esp32c5",
                 args: "",
                 entry_point: None
             },
             lp: ChipConfParams {
-                target: "riscv32imac-unknown-none-elf",
+                target: Some("riscv32imac-unknown-none-elf"),
                 features: "esp32c5",
                 args: "",
                 entry_point: Some("__risc_v_rt__main")
@@ -56,13 +56,13 @@ pub fn get_conf_by_chip_name<S: AsRef<str>>(chip_name: S) -> Option<ChipConf> {
         }),
         "esp32p4" | "esp32-p4" => Some(ChipConf {
             main: ChipConfParams {
-                target: "riscv32imac-unknown-none-elf",
+                target: Some("riscv32imac-unknown-none-elf"),
                 features: "esp32p4",
                 args: "",
                 entry_point: None
             },
             lp: ChipConfParams {
-                target: "riscv32imac-unknown-none-elf",
+                target: Some("riscv32imac-unknown-none-elf"),
                 features: "esp32p4",
                 args: "",
                 entry_point: Some("__risc_v_rt__main")
@@ -71,13 +71,13 @@ pub fn get_conf_by_chip_name<S: AsRef<str>>(chip_name: S) -> Option<ChipConf> {
         }),
         "esp32s3" | "esp32-s3" => Some(ChipConf {
             main: ChipConfParams {
-                target: "xtensa-esp32s3-none-elf",
+                target: Some("xtensa-esp32s3-none-elf"),
                 features: "esp32s3",
                 args: "",
                 entry_point: None
             },
             lp: ChipConfParams {
-                target: "riscv32imc-unknown-none-elf",
+                target: Some("riscv32imc-unknown-none-elf"),
                 features: "esp32s3",
                 args: "",
                 entry_point: Some("__risc_v_rt__main")
@@ -86,13 +86,13 @@ pub fn get_conf_by_chip_name<S: AsRef<str>>(chip_name: S) -> Option<ChipConf> {
         }),
         "posix" => Some(ChipConf {
             main: ChipConfParams {
-                target: "",
+                target: None,
                 features: "",
                 args: "",
                 entry_point: None
             },
             lp: ChipConfParams {
-                target: "",
+                target: None,
                 features: "",
                 args: "",
                 entry_point: None

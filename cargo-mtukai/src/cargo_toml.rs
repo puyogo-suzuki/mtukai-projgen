@@ -97,7 +97,7 @@ impl CargoToml {
     fn read_build_parameters(item: Option<&toml_edit::InlineTable>, chip_conf: &Option<crate::chip_dic::ChipConfParams>, release_default : bool) -> BuildParameter {
         // Check if the `chip` is available.
         let (target, features, args, entry_point) = match chip_conf {
-            Some(crate::chip_dic::ChipConfParams { target, features, args , entry_point}) => (Some(target.to_owned().to_owned()), Some(features.to_owned().to_owned()), Some(args.to_owned().to_owned()), entry_point.map(|s| s.to_owned())),
+            Some(crate::chip_dic::ChipConfParams { target, features, args , entry_point}) => (target.map(|s| s.to_owned()), Some(features.to_owned().to_owned()), Some(args.to_owned().to_owned()), entry_point.map(|s| s.to_owned())),
             None => (None, None, None, None)
         };
         // Check the inline table is available.
