@@ -3,8 +3,7 @@ use std::collections::{HashMap, HashSet};
 use ra_ap_base_db::SourceDatabase;
 use ra_ap_ide::RootDatabase;
 use ra_ap_syntax::{
-    ast::{self, AstNode, HasAttrs, HasModuleItem, HasName},
-    AstToken,
+    AstToken, ast::{self, Adt, AstNode, HasAttrs, HasModuleItem, HasName, Impl, Trait},
 };
 use ra_ap_vfs::Vfs;
 
@@ -14,6 +13,9 @@ use super::{use_elimination, UseInfo, UnusedAnalysisResult, UnusedItem, UnusedIt
 #[derive(Debug)]
 pub(super) struct AstCollectFile {
     pub(super) functions: HashMap<String, (ra_ap_syntax::ast::Fn, AstVisitInfo)>,
+    pub(super) adts: HashMap<String, (Adt, AstVisitInfo)>,
+    pub(super) traits: HashMap<String, (ra_ap_syntax::ast::Trait, AstVisitInfo)>,
+    pub(super) impls: HashMap<String, (ra_ap_syntax::ast::Impl, AstVisitInfo)>,
     pub(super) unresolved_imports: Vec<UseInfo>,
 }
 
@@ -21,7 +23,7 @@ impl AstCollectFile {
     /// Returns a new `AstCollectFile` instance by collecting function information from the given `file`.
     pub(super) fn new_from_file(file: &ra_ap_syntax::SourceFile, unresolved_imports: Vec<UseInfo>, features: &[String]) -> AstCollectFile {
         fn visit_state(func: &ast::Fn, features: &[String]) -> AstVisitInfo {
-            if has_panic_handler(func) || has_undead_macro(func, features) {
+            if has_panic_handler(func) || has_undead_macro(func, features) || is_cares_by_cfg(func) {
                 AstVisitInfo::Visited
             } else {
                 AstVisitInfo::None
@@ -29,6 +31,9 @@ impl AstCollectFile {
         }
 
         let mut functions = HashMap::new();
+        let mut traits = HashMap::new();
+        let mut impls = HashMap::new();
+        let mut adts = HashMap::new();
         fn insert_to_functions(functions: &mut HashMap<String, (ra_ap_syntax::ast::Fn, AstVisitInfo)>, func: &ra_ap_syntax::ast::Fn, features: &[String]) {
             functions.insert(get_ast_fn_key(&func), (func.clone(), visit_state(func, features)));
         }
@@ -36,6 +41,15 @@ impl AstCollectFile {
             match item {
                 ast::Item::Fn(func) => {
                     insert_to_functions(&mut functions, &func, features);
+                }
+                ast::Item::Struct(s) => {
+                    adts.insert(get_ast_adt_key(&Adt::Struct(s.clone())), (Adt::Struct(s), AstVisitInfo::None));
+                }
+                ast::Item::Enum(e) => {
+                    adts.insert(get_ast_adt_key(&Adt::Enum(e.clone())), (Adt::Enum(e), AstVisitInfo::None));
+                }
+                ast::Item::Union(u) => {
+                    adts.insert(get_ast_adt_key(&Adt::Union(u.clone())), (Adt::Union(u), AstVisitInfo::None));
                 }
                 ast::Item::Impl(impl_) => {
                     // functions inside impl block
@@ -46,35 +60,63 @@ impl AstCollectFile {
                             }
                         }
                     }
+                    impls.insert(get_ast_impl_key(&impl_), (impl_, AstVisitInfo::None));
                 }
                 ast::Item::Trait(trait_) => {
                     // functions inside trait definition
                     if let Some(assoc_item_list) = trait_.assoc_item_list() {
                         for assoc_item in assoc_item_list.assoc_items() {
-                            if let ast::AssocItem::Fn(func) = assoc_item && func.body().is_some() {
+                            if let ast::AssocItem::Fn(func) = assoc_item {
                                 insert_to_functions(&mut functions, &func, features);
                             }
                         }
                     }
+                    traits.insert(get_ast_trait_key(&trait_), (trait_, AstVisitInfo::None));
                 }
                 _ => {}
             }
         }  
-        AstCollectFile { functions, unresolved_imports }
+        AstCollectFile { functions, adts, traits, impls, unresolved_imports }
     }
 
     /// Converts `functions` into the `Vec` of `UnusedItem`s.
     pub(super) fn into_vec_unuseditem(&self) -> Vec<UnusedItem> {
-        let mut ranges: Vec<UnusedItem> = self.functions.values().filter_map(|(func, visit)| {
-            if let AstVisitInfo::Unused = visit {
-                Some(UnusedItem::new(get_ast_fn_key(&func), func.syntax().text_range(), UnusedItemKind::Function))
-            } else {
-                None
-            }
+        let mut ranges: Vec<UnusedItem> = self.functions.values()
+            .filter(|(_, visit)| *visit == AstVisitInfo::Unused)
+            .map(|(func, _)| {
+            UnusedItem::new(get_ast_fn_key(func), func.syntax().text_range(), UnusedItemKind::Function)
         }).collect();
+        for (adt, _) in self.adts.values()
+            .filter(|(_, visit)| *visit == AstVisitInfo::Unused) {
+            ranges.push(UnusedItem::new(get_ast_adt_key(adt), adt.syntax().text_range(), UnusedItemKind::Adt));
+        }
+        for (tr, _) in self.traits.values()
+            .filter(|(_, visit)| *visit == AstVisitInfo::Unused) {
+            ranges.push(UnusedItem::new(get_ast_trait_key(tr), tr.syntax().text_range(), UnusedItemKind::Trait));
+        }
+        for(im, _) in self.impls.values()
+            .filter(|(_, visit)| *visit == AstVisitInfo::Unused) {
+            ranges.push(UnusedItem::new(get_ast_impl_key(im), im.syntax().text_range(), UnusedItemKind::Impl));
+        }
         let mut res = use_elimination::into_vec_unuseditem(&self.unresolved_imports);
         res.append(&mut ranges);
-        res.sort();
+        res.sort_by(|a, b| {
+            let st = a.text_range.start().cmp(&b.text_range.start());
+            if st == std::cmp::Ordering::Equal {
+                a.text_range.end().cmp(&b.text_range.end())
+            } else {
+                st
+            }
+        });
+        for i in 0..res.len()-1 {
+            if i >= res.len()-1 {
+                break;
+            }
+            while i+1 < res.len() && res[i].text_range.end() > res[i+1].text_range.start() {
+                res[i].text_range = res[i].text_range.cover(res[i+1].text_range);
+                res.remove(i+1);
+            }
+        }
         res
     }
 }
@@ -93,7 +135,7 @@ pub(super) enum AstVisitInfo {
 /// Collected Information in AST-level
 #[derive(Debug)]
 pub(super) struct AstCollect {
-    files : HashMap<ra_ap_vfs::FileId, AstCollectFile>,
+    pub(super) files : HashMap<ra_ap_vfs::FileId, AstCollectFile>,
 }
 
 impl AstCollect {
@@ -102,6 +144,15 @@ impl AstCollect {
     }
     pub(super) fn get_function_info<S: AsRef<str>>(&mut self, file_id: ra_ap_vfs::FileId, key: S) -> Option<&mut (ra_ap_syntax::ast::Fn, AstVisitInfo)> {
         self.files.get_mut(&file_id).and_then(|file_entry| file_entry.functions.get_mut(key.as_ref()))
+    }
+    pub(super) fn get_adt_info<S: AsRef<str>>(&mut self, file_id: ra_ap_vfs::FileId, key: S) -> Option<&mut (Adt, AstVisitInfo)> {
+        self.files.get_mut(&file_id).and_then(|file_entry| file_entry.adts.get_mut(key.as_ref()))
+    }
+    pub(super) fn get_impl_info<S: AsRef<str>>(&mut self, file_id: ra_ap_vfs::FileId, key: S) -> Option<&mut (Impl, AstVisitInfo)> {
+        self.files.get_mut(&file_id).and_then(|file_entry| file_entry.impls.get_mut(key.as_ref()))
+    }
+    pub(super) fn get_trait_info<S: AsRef<str>>(&mut self, file_id: ra_ap_vfs::FileId, key: S) -> Option<&mut (Trait, AstVisitInfo)> {
+        self.files.get_mut(&file_id).and_then(|file_entry| file_entry.traits.get_mut(key.as_ref()))
     }
     pub(super) fn collect_from_file(&mut self, file_id : &ra_ap_vfs::FileId, db : &RootDatabase, root_krate : &ra_ap_hir::Crate, disabled_optional_deps: &HashSet<String>, features : &[String]) {
         let text = db.file_text(file_id.clone()).text(db);
@@ -126,31 +177,29 @@ impl AstCollect {
     }
 }
 
-/// Generate the identifier (key) for functions. e.g., impl:Foo::bar
-pub(super) fn get_ast_fn_key(func: &ast::Fn) -> String {
-    fn sanitize_type_str(s: &str) -> String {
-        s.chars().filter(|c| !c.is_whitespace()).collect()
+fn gen_impl_part_key(impl_: &ast::Impl) -> String {
+    let mut thispart = "impl:".to_string();
+    let self_ty = impl_
+        .self_ty()
+        .map(|t| t.syntax().text().to_string())
+        .unwrap_or_default();
+    if let Some(tr) = impl_
+        .trait_()
+        .map(|t| t.syntax().text().to_string())
+    {
+        thispart.push_str(&tr);
+        thispart.push_str(":for:");
     }
-    let fn_name = func.name().map(|n| n.text().to_string()).unwrap_or_else(|| "<unnamed>".to_string());
-    let mut parts = Vec::new();
+    thispart.push_str(&self_ty);
+    thispart
+}
 
-    let mut current = func.syntax().parent();
+fn gen_path_key(parent : Option<ra_ap_syntax::SyntaxNode>) -> Vec<String>{
+    let mut current = parent;
+    let mut parts = Vec::new();
     while let Some(node) = current {
         if let Some(impl_) = ast::Impl::cast(node.clone()) {
-            let mut thispart = "impl:".to_string();
-            let self_ty = impl_
-                .self_ty()
-                .map(|t| sanitize_type_str(&t.syntax().text().to_string()))
-                .unwrap_or_default();
-            if let Some(tr) = impl_
-                .trait_()
-                .map(|t| sanitize_type_str(&t.syntax().text().to_string()))
-            {
-                thispart.push_str(&tr);
-                thispart.push_str(":for:");
-            }
-            thispart.push_str(&self_ty);
-            parts.push(thispart);
+            parts.push(gen_impl_part_key(&impl_));
         } else if let Some(tr) = ast::Trait::cast(node.clone()) {
             if let Some(trait_name) = tr.name().map(|n| n.text().to_string()) {
                 parts.push(format!("trait:{}", trait_name));
@@ -162,9 +211,33 @@ pub(super) fn get_ast_fn_key(func: &ast::Fn) -> String {
         }
         current = node.parent();
     }
-
     parts.reverse();
-    parts.push(format!("fn:{}", fn_name));
+    parts
+}
+
+/// Generate the identifier (key) for functions. e.g., impl:Foo::bar
+pub(super) fn get_ast_fn_key(func: &ast::Fn) -> String {
+    let mut parts = gen_path_key(func.syntax().parent());
+    parts.push(format!("fn:{}", func.name().map(|n| n.text().to_string()).unwrap_or_else(|| "fn:<unnamed>".to_string())));
+    parts.join("::")
+}
+
+pub(super) fn get_ast_adt_key(adt: &Adt) -> String {
+    let mut parts = gen_path_key(adt.syntax().parent());
+    parts.push(format!("adt:{}", adt.name().map(|n| n.text().to_string()).unwrap_or_else(|| "adt:<unnamed>".to_string())));
+    parts.join("::")
+}
+
+pub(super) fn get_ast_impl_key(impl_: &ast::Impl) -> String {
+    let fname = gen_impl_part_key(impl_);
+    let mut parts = gen_path_key(impl_.syntax().parent());
+    parts.push(fname);
+    parts.join("::")
+}
+
+pub(super) fn get_ast_trait_key(tr: &ast::Trait) -> String {
+    let mut parts = gen_path_key(tr.syntax().parent());
+    parts.push(format!("trait:{}", tr.name().map(|n| n.text().to_string()).unwrap_or_else(|| "trait:<unnamed>".to_string())));
     parts.join("::")
 }
 

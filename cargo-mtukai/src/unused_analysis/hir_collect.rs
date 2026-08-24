@@ -1,6 +1,6 @@
-use std::{cell::Cell, collections::HashMap, fmt::Debug};
+use std::{cell::{Cell, RefCell}, collections::{HashMap, HashSet}, fmt::Debug};
 
-use ra_ap_hir::{AsAssocItem, Crate};
+use ra_ap_hir::{AsAssocItem, Crate, DefWithBody, Type};
 use ra_ap_ide::{RootDatabase, Semantics};
 use ra_ap_syntax::{ast, AstNode};
 
@@ -36,6 +36,8 @@ impl HirVisit {
 pub(super) struct HirCollect {
     pub(super) functions: HashMap<ra_ap_hir::Function, HirVisit>,
     pub(super) traits: HashMap<ra_ap_hir::Trait, HirVisit>,
+    visited_foreign_traits: RefCell<HashSet<ra_ap_hir::Trait>>,
+    pub(super) impls: HashMap<ra_ap_hir::Impl, HirVisit>,
     pub(super) adts: HashMap<ra_ap_hir::Adt, HirVisit>,
     pub(super) consts: HashMap<ra_ap_hir::Const, HirVisit>,
     pub(super) statics: HashMap<ra_ap_hir::Static, HirVisit>,
@@ -47,6 +49,8 @@ impl HirCollect {
         let mut result = HirCollect {
             functions: HashMap::new(),
             traits: HashMap::new(),
+            visited_foreign_traits: RefCell::new(HashSet::new()),
+            impls: HashMap::new(),
             adts: HashMap::new(),
             consts: HashMap::new(),
             statics: HashMap::new(),
@@ -60,16 +64,14 @@ impl HirCollect {
     }
 
     fn do_module<S: AsRef<str>>(&mut self, m: ra_ap_hir::Module, sema: &Semantics<RootDatabase>, db: &RootDatabase, entrypoint_name: &Option<S>) -> bool {
-        let mut found_main = false;
         for imp in m.impl_defs(db) {
-            let force_visited = imp.trait_(db).is_some();
-            for i in imp.items(db).iter() {
+            for i in imp.items(db) {
                 match i {
                     ra_ap_hir::AssocItem::Function(f) => {
-                        self.functions.insert(f.clone(), HirVisit::new(force_visited));
+                        self.functions.insert(f.clone(), HirVisit::new(false));
                     }
                     ra_ap_hir::AssocItem::Const(c) => {
-                        self.consts.insert(c.clone(), HirVisit::new(force_visited));
+                        self.consts.insert(c.clone(), HirVisit::new(false));
                     }
                     ra_ap_hir::AssocItem::TypeAlias(_) => {
                         // DO NOTHING
@@ -78,6 +80,7 @@ impl HirCollect {
             }
         }
 
+        let mut found_main = false;
         for d in m.declarations(db) {
             match d {
                 ra_ap_hir::ModuleDef::Module(sub_m) => {
@@ -93,7 +96,7 @@ impl HirCollect {
                     self.functions.insert(f, HirVisit::new(is_visited));
                 }
                 ra_ap_hir::ModuleDef::Adt(adt) => {
-                    self.adts.insert(adt, HirVisit::force_visited());
+                    self.adts.insert(adt, HirVisit::new(false));
                 }
                 ra_ap_hir::ModuleDef::Const(c) => {
                     self.consts.insert(c, HirVisit::force_visited());
@@ -102,22 +105,54 @@ impl HirCollect {
                     self.statics.insert(st, HirVisit::force_visited());
                 }
                 ra_ap_hir::ModuleDef::Trait(t) => {
-                    self.traits.insert(t, HirVisit::force_visited());
+                    self.traits.insert(t, HirVisit::new(false));
                     for item in t.items(db) {
-                        if let ra_ap_hir::AssocItem::Function(f) = item
-                            && sema.source(f.clone()).and_then(|s| s.value.body()).is_some() {
-                            self.functions.insert(f, HirVisit::new(true));
+                        if let ra_ap_hir::AssocItem::Function(f) = item {
+                            self.functions.insert(f, HirVisit::new(false));
                         }
                     }
                 }
                 _ => {}
             }
         }
+        for imp in m.impl_defs(db) {
+            self.impls.insert(imp, HirVisit::new(false));
+        }
         found_main
     }
 
+    fn is_all_type_used(&self, db: &RootDatabase, ty: &Type<'_>) -> bool {
+        if let Some(_) = ty.as_builtin() {
+            true
+        } else if let Some((adt, args)) = ty.as_adt_with_args() {
+            self.adts.get(&adt).map(|v| v.is_visited()).unwrap_or(true) // If the ADT is not found, it is considered used because it is outside the crate. TODO: check it?
+            && args.iter().all(|arg| arg.as_ref().map(|arg| self.is_all_type_used(db, &arg)).unwrap_or(false))
+        } else if let Some(slice) = ty.as_slice() {
+            self.is_all_type_used(db, &slice)
+        } else if let Some((ary, _)) = ty.as_array(db) {
+            self.is_all_type_used(db, &ary)
+        } else if let Some((typ, _)) = ty.as_reference() {
+            self.is_all_type_used(db, &typ)
+        } else if let Some((typ, _)) = ty.as_raw_ptr() {
+            self.is_all_type_used(db, &typ)
+        } else if ty.is_unit() {
+            true
+        } else{
+            let tuple_types = ty.tuple_fields(db);
+            if tuple_types.len() > 0 {
+                tuple_types.iter().all(|t| self.is_all_type_used(db, t))
+            } else { // unresolved?
+                true // If the type is unresolved or builtin, it is considered used because it is outside the crate. TODO: check it?
+            }
+        }
+    }
+
     /// Walk the dependency.
-    pub(super) fn walk_dependency(&self, db: &RootDatabase) {
+    pub(super) fn walk_dependency(&self, db: &RootDatabase, krate: &Crate) {
+        fn has_syntactic_trait_target(db: &RootDatabase, impl_: &ra_ap_hir::Impl) -> bool {
+            use ra_ap_hir::HasSource;
+            impl_.source(db).map(|i| i.value.trait_().is_some()).unwrap_or(false)
+        }
         let mut walkqueue = Vec::<ra_ap_hir::Function>::new();
         for (f, val) in self.functions.iter().filter(|(_, v)| v.is_visited()) {
             walkqueue.push(f.clone());
@@ -126,19 +161,83 @@ impl HirCollect {
         let sema = Semantics::new(db);
 
         // Scan initializers of consts and statics
-        for body in self.consts.keys()
-            .filter_map(|body| sema.source(*body))
-            .filter_map(|s| s.value.body()) {
-            self.scan_syntax_for_functions(db, body.syntax(), &mut walkqueue, &sema);
+        for const_ in self.consts.keys() {
+            self.queue_types(&const_.ty(db), db);
+            if let Some(body) = sema.source(*const_).map(|s| s.value).and_then(|const_| const_.body()) {
+                self.scan_syntax_for_functions(db, body.syntax(), &mut walkqueue, &sema);
+            }
         }
-        for body in self.statics.keys()
-            .filter_map(|st| sema.source(*st))
-            .filter_map(|s| s.value.body()) {
-            self.scan_syntax_for_functions(db, body.syntax(),  &mut walkqueue, &sema);
+        for static_ in self.statics.keys(){
+            self.queue_types(&static_.ty(db), db);
+            if let Some(body) = sema.source(*static_).map(|s| s.value).and_then(|static_| static_.body()) {
+                self.scan_syntax_for_functions(db, body.syntax(), &mut walkqueue, &sema);
+            }
         }
-
-        while let Some(f) = walkqueue.pop().and_then(|f| sema.source(f)) {
-            self.scan_syntax_for_functions(db, f.value.syntax(), &mut walkqueue, &sema);
+        while walkqueue.len() > 0 {
+            while let Some(f) = walkqueue.pop() {
+                if let Some(f) = sema.source(f) {
+                    self.scan_syntax_for_functions(db, f.value.syntax(), &mut walkqueue, &sema);
+                }
+            }
+            // Check all newly visited functions in impl.
+            for imp in ra_ap_hir::Impl::all_in_crate(db, *krate).iter().filter(|imp| self.impls.contains_key(imp)) {
+                let mut visit_all_fns = || {
+                    for func in imp.items(db).iter().filter_map(filter_assoc_function) {
+                        if self.require_visit(&func) {
+                            walkqueue.push(func.clone());
+                        }
+                    }
+                };
+                if let Some(trait_) = imp.trait_(db) {
+                    if self.is_all_type_used(db, &imp.self_ty(db)) {
+                        if !self.traits.contains_key(&trait_) {
+                            // If the trait is foreign, all functions are considered used.
+                            // Fundamental or operator overloading traits are considered used if the type is used.
+                            if self.visited_foreign_traits.borrow().contains(&trait_) 
+                            || is_fundamental_or_operator_trait(trait_.name(db).as_str()) {
+                                visit_all_fns();
+                            }
+                        } else {
+                            let mut used_functions_name = HashSet::new();
+                            // If not foreign, only functions that have been visited are considered used.
+                            // Creating used_functions_name
+                            for func in trait_.items(db).iter().filter_map(filter_assoc_function) {
+                                if self.functions.get(&func).map(|visit| visit.is_visited()).unwrap_or(false) {
+                                    used_functions_name.insert(func.name(db));
+                                }
+                            }
+                            // End of creating used_functions_name
+                            for func in imp.items(db).iter().filter_map(filter_assoc_function) {
+                                if used_functions_name.contains(&func.name(db)) && self.require_visit(&func) {
+                                    walkqueue.push(func.clone());
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    if has_syntactic_trait_target(db, &imp) && self.is_all_type_used(db, &imp.self_ty(db)) {
+                        visit_all_fns(); // If the trait is unresolved, visit all functions conserveatively.
+                    }
+                    // Do not queue associated functions.
+                }
+            }
+        }
+        // Finaly, mark used traits and impls.
+        
+        let is_any_item_used = |items : Vec<ra_ap_hir::AssocItem>| {
+            items.iter().filter_map(filter_assoc_function).any(|func| {
+                self.functions.get(&func).map(|visit| visit.is_visited()).unwrap_or(false)
+            })
+        };
+        for (imp, visit) in self.impls.iter() {
+            if self.is_all_type_used(db, &imp.self_ty(db)) && is_any_item_used(imp.items(db)) {
+                visit.visit();
+            }
+        }
+        for (trait_, visit) in self.traits.iter() {
+            if is_any_item_used(trait_.items(db)) {
+                visit.visit();
+            }
         }
     }
 
@@ -147,17 +246,83 @@ impl HirCollect {
         self.functions.get(f).map(|is_visited| !is_visited.visit()).unwrap_or(false)
         // unwrap_or(false): Is the function not collected? wonderful.
     }
-    // Push all trait implementers
-    fn push_all_trait_implementers(&self, db: &RootDatabase, function_name : &ra_ap_hir::Name, trait_: &ra_ap_hir::Trait, walkqueue: &mut Vec<ra_ap_hir::Function>) {
-        for imp in ra_ap_hir::Impl::all_for_trait(db, *trait_) {
-            for item in imp.items(db).iter() {
-                if let ra_ap_hir::AssocItem::Function(func) = item
-                    && &func.name(db) == function_name && self.require_visit(&func)
-                    // The function name is same and it is required to visit.     
-                {
-                    walkqueue.push(func.clone());
+    // Push related trait implementers
+    fn push_used_trait_implementers(&self, db: &RootDatabase, function_name : &ra_ap_hir::Name, trait_: &ra_ap_hir::Trait, walkqueue: &mut Vec<ra_ap_hir::Function>) {
+        if self.traits.contains_key(trait_) { // not foreign_trait
+            let mut visit_func = |items : Vec<ra_ap_hir::AssocItem>| {
+                for func in items.iter().filter_map(filter_assoc_function) {
+                    if &func.name(db) == function_name && self.require_visit(&func) {
+                        walkqueue.push(func.clone());
+                        break;
+                    }
+                }
+            };
+            visit_func(trait_.items(db));
+            for imp in ra_ap_hir::Impl::all_for_trait(db, *trait_).iter().filter(|imp| self.is_all_type_used(db, &imp.self_ty(db))) {
+                visit_func(imp.items(db));
+            }
+        } else if self.visited_foreign_traits.borrow().contains(trait_) {
+            return; // Already visited
+        } else  { // Unvisited foreign trait. Visit all functions of the trait.
+            self.visited_foreign_traits.borrow_mut().insert(*trait_);
+            for imp in ra_ap_hir::Impl::all_for_trait(db, *trait_).iter().filter(|imp| self.is_all_type_used(db, &imp.self_ty(db))) {
+                for func in imp.items(db).iter().filter_map(filter_assoc_function) {
+                    if self.require_visit(&func) {
+                        walkqueue.push(func.clone());
+                    }
                 }
             }
+        }
+    }
+
+    fn queue_type(&self, adt: &ra_ap_hir::Adt, db: &RootDatabase) {
+        if let Some(adt_visit) = self.adts.get(adt)
+            && adt_visit.visit() {
+            match adt {
+                ra_ap_hir::Adt::Struct(strct) => {
+                    for field in strct.fields(db) {
+                        self.queue_types(&field.ty(db), db);
+                    }
+                }
+                ra_ap_hir::Adt::Union(union_) => {
+                    for field in union_.fields(db) {
+                        self.queue_types(&field.ty(db), db);
+                    }
+                }
+                ra_ap_hir::Adt::Enum(enm) => {
+                    for variant in enm.variants(db) {
+                        for field in variant.fields(db) {
+                            self.queue_types(&field.ty(db), db);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn queue_types(&self, ty: &Type<'_>, db: &RootDatabase) {
+        if let Some((adt, args)) = ty.as_adt_with_args() {
+            self.queue_type(&adt, db);
+            for arg in args.iter().filter_map(|arg| arg.as_ref()) {
+                self.queue_types(arg, db);
+            }
+        } else if let Some(slice) = ty.as_slice() {
+            self.queue_types(&slice, db);
+        } else if let Some((ary, _)) = ty.as_array(db) {
+            self.queue_types(&ary, db);
+        } else if let Some((typ, _)) = ty.as_reference() {
+            self.queue_types(&typ, db);
+        } else if let Some((typ, _)) = ty.as_raw_ptr() {
+            self.queue_types(&typ, db);
+        } else if let Some(cal) = ty.as_callable(db) {
+            for p in cal.params() {
+                self.queue_types(&p.ty(), db);
+            }
+            self.queue_types(&cal.return_type(), db);
+        } else {
+            // closure: callables include closures.
+            // builtin, unit: no need to queue.
+            // trait types: no need to queue because the necessary types have already been queued where they are instantiated.
         }
     }
 
@@ -168,12 +333,14 @@ impl HirCollect {
                 match assoc.container(db) {
                     ra_ap_hir::AssocItemContainer::Trait(t) => {
                         // trait Foo
-                        self.push_all_trait_implementers(db, &f.name(db), &t, walkqueue);
+                        // It may call all impelementations of the trait function, so queue all implementations whose type is used.
+                        self.push_used_trait_implementers(db, &f.name(db), &t, walkqueue);
                     }
                     ra_ap_hir::AssocItemContainer::Impl(i) => {
                         if let Some(t) = i.trait_(db) {
                             // impl Foo for Bar
-                            self.push_all_trait_implementers(db, &f.name(db), &t, walkqueue);
+                            // Conservertively queue all implementations of the trait function whose type is used.
+                            self.push_used_trait_implementers(db, &f.name(db), &t, walkqueue);
                         } else {
                             // impl Bar
                             // DO NOTHING
@@ -182,6 +349,15 @@ impl HirCollect {
                 }
             }
             walkqueue.push(f);
+            for p in f.assoc_fn_params(db) {
+                self.queue_types(&p.ty(), db);
+            }
+            self.queue_types(&f.ret_type(db), db);
+
+            let f_body : DefWithBody = f.into();
+            for ty in f_body.expression_types(db) {
+                self.queue_types(&ty, db);
+            }
         }
     }
     
@@ -215,80 +391,76 @@ impl HirCollect {
                 }
             }
         }
+    }
+}
 
-        // // Binary operators (e.g. a + b -> Add::add, a == b -> PartialEq::eq)
-        // for bin_expr in syntax.descendants().filter_map(ast::BinExpr::cast) {
-        //     if let Some(resolved) = sema.resolve_bin_expr(&bin_expr) {
-        //         self.queue_function(db, resolved, walkqueue);
-        //     }
-        // }
+fn is_fundamental_or_operator_trait(trait_name: &str) -> bool {
+    matches!(
+        trait_name,
+        // Operator overloading traits (std::ops, std::cmp)
+        "Add"
+            | "Sub"
+            | "Mul"
+            | "Div"
+            | "Rem"
+            | "Neg"
+            | "Not"
+            | "BitAnd"
+            | "BitOr"
+            | "BitXor"
+            | "Shl"
+            | "Shr"
+            | "AddAssign"
+            | "SubAssign"
+            | "MulAssign"
+            | "DivAssign"
+            | "RemAssign"
+            | "BitAndAssign"
+            | "BitOrAssign"
+            | "BitXorAssign"
+            | "ShlAssign"
+            | "ShrAssign"
+            | "Index"
+            | "IndexMut"
+            | "Deref"
+            | "DerefMut"
+            | "PartialEq"
+            | "Eq"
+            | "PartialOrd"
+            | "Ord"
+            // Fundamental / Standard traits
+            | "Drop"
+            | "Clone"
+            | "Copy"
+            | "Default"
+            | "Hash"
+            | "Debug"
+            | "Display"
+            | "Send"
+            | "Sync"
+            | "Unpin"
+            | "From"
+            | "Into"
+            | "TryFrom"
+            | "TryInto"
+            | "AsRef"
+            | "AsMut"
+            | "IntoIterator"
+            | "Iterator"
+            // Future traits
+            | "Future"
+            | "IntoFuture"
+            // Fn
+            | "Fn"
+            | "FnMut"
+            | "FnOnce"
+    )
+}
 
-        // // Unary/Prefix operators (e.g. -a -> Neg::neg, !a -> Not::not, *a -> Deref::deref)
-        // for prefix_expr in syntax.descendants().filter_map(ast::PrefixExpr::cast) {
-        //     if let Some(resolved) = sema.resolve_prefix_expr(&prefix_expr) {
-        //         self.queue_function(db, resolved, walkqueue);
-        //     }
-        // }
-
-        // // Index operators (e.g. a[i] -> Index::index / IndexMut::index_mut)
-        // for index_expr in syntax.descendants().filter_map(ast::IndexExpr::cast) {
-        //     if let Some(resolved) = sema.resolve_index_expr(&index_expr) {
-        //         self.queue_function(db, resolved, walkqueue);
-        //     }
-        // }
-
-        // // Try operator (e.g. expr? -> Try::branch / From::from)
-        // for try_expr in syntax.descendants().filter_map(ast::TryExpr::cast) {
-        //     if let Some(resolved) = sema.resolve_try_expr(&try_expr) {
-        //         self.queue_function(db, resolved, walkqueue);
-        //     }
-        // }
-
-        // // Await operator (e.g. fut.await -> Future::poll)
-        // for await_expr in syntax.descendants().filter_map(ast::AwaitExpr::cast) {
-        //     if let Some(resolved) = sema.resolve_await_to_poll(&await_expr) {
-        //         self.queue_function(db, resolved, walkqueue);
-        //     }
-        // }
-
-        // Higher-order functions
-        for pr in syntax.descendants()
-            .filter_map(ast::PathExpr::cast)
-            .filter_map(|path_expr| path_expr.path().and_then(|path| sema.resolve_path(&path))) {
-            if let ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Function(resolved)) = pr {
-                self.queue_function(db, resolved, walkqueue);
-            }
-        }
-
-        // // Implicit Deref Coercions (e.g. function arguments, autoderef on method/field access)
-        // for adjust in syntax
-        //     .descendants()
-        //     .filter_map(ast::Expr::cast)
-        //     .filter_map(|expr| sema.expr_adjustments(&expr))
-        //     .flatten()
-        // {
-        //     match adjust.kind {
-        //         ra_ap_hir::Adjust::Deref(Some(overloaded))  => {
-        //             self.queue_types(&adjust.source, walkqueue, db);
-        //             let target_trait = match overloaded.0 {
-        //                 ra_ap_hir::Mutability::Shared => "Deref",
-        //                 ra_ap_hir::Mutability::Mut => "DerefMut",
-        //             };
-        //             for item in ra_ap_hir::Impl::all_for_type(db, adjust.source.clone())
-        //                 .into_iter()
-        //                 .filter(|imp| imp.trait_(db).map(|t| t.name(db).as_str() == target_trait).unwrap_or(false))
-        //                 .flat_map(|imp| imp.items(db))
-        //             {
-        //                 match item {
-        //                     ra_ap_hir::AssocItem::Function(func) => {
-        //                         self.queue_function(db, func, walkqueue);
-        //                     },
-        //                     _ => {}
-        //                 }
-        //             }
-        //         },
-        //         _ => {}
-        //     }
-        // }
+fn filter_assoc_function(assoc: &ra_ap_hir::AssocItem) -> Option<ra_ap_hir::Function> {
+    if let ra_ap_hir::AssocItem::Function(f) = assoc {
+        Some(f.clone())
+    } else {
+        None
     }
 }

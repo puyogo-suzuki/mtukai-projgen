@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use ra_ap_base_db::SourceDatabase;
-use ra_ap_hir::Crate;
+use ra_ap_hir::{Crate, HirFileId};
 use ra_ap_ide::{RootDatabase, Semantics, TextRange};
 use ra_ap_load_cargo::{load_workspace_at, LoadCargoConfig, ProcMacroServerChoice};
 use ra_ap_project_model::{CargoConfig, CargoFeatures};
@@ -38,7 +38,6 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Pa
     let workspace_root = root_crate_root
         .canonicalize()
         .context("failed to canonicalize workspace root")?;
-
     let all_targets = target.is_none();
     let cargo_config = CargoConfig {
         sysroot: Some(ra_ap_project_model::RustLibSource::Discover),
@@ -134,7 +133,7 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Pa
     let hircollect = ra_ap_hir::attach_db(&root_db, || {
         let collections = hir_collect::HirCollect::new(&root_krate, &root_db, entry_point_name)?;
         // println!("Result: {:?}", collections);
-        collections.walk_dependency(&root_db);
+        collections.walk_dependency(&root_db, &root_krate);
         Some(collections)
     }).context("Failed to search the main function")?;
 
@@ -157,6 +156,7 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Pa
 
     // for (file_id, fi) in ast_collect.files.iter() {
     //     for (_, (f, visit)) in fi.functions.iter() {
+    //         use ra_ap_syntax::{AstNode, ast::HasName};
     //         let path = vfs.file_path(*file_id).as_path().map(|v| v.to_string()).unwrap_or_default();
     //         let txt = root_db.file_text(*file_id).text(&root_db);
     //         println!("function {} at {:?} is {:?}", f.name().map(|n| n.text().to_string()).unwrap_or_else(|| "<unnamed>".to_string()), textrange_to_line_column(path, txt, f.syntax().text_range()), visit);
@@ -191,20 +191,42 @@ pub fn analyze_unused<S1: AsRef<str> + Debug, S2: AsRef<str>>(manifest_path: &Pa
 
 fn check_used_functions_in_ast(hircollect: &hir_collect::HirCollect, ast_collect: &mut ast_collect::AstCollect, db: &RootDatabase) {
     let sema = Semantics::new(db);
+    fn retrive_file_id(db: &RootDatabase, source: &HirFileId) -> ra_ap_vfs::FileId {
+        if let Some(mf) = source.macro_file() {
+            mf.loc(db).kind.original_call_range_with_input(db).file_id
+        } else {
+            source.original_file(db)
+        }.file_id(db)
+    }
+    fn set_visited(avi: &mut ast_collect::AstVisitInfo, visit: &hir_collect::HirVisit) {
+        if visit.is_visited() {
+            *avi = ast_collect::AstVisitInfo::Visited;
+        } else if *avi == ast_collect::AstVisitInfo::None { // Do not make it unused if it is already visited in HIR-level.
+            *avi = ast_collect::AstVisitInfo::Unused; // It is recognized in HIR-level and unused.
+        }
+    }
     for (f, visit) in hircollect.functions.iter() {
-        if let Some(source) = sema.source(f.clone()) {
-            let file_id = if let Some(mf) = source.file_id.macro_file() {
-                mf.loc(db).kind.original_call_range_with_input(db).file_id
-            } else {
-                source.file_id.original_file(db)
-            }.file_id(db);
-            if let Some((_, avi)) = ast_collect.get_function_info(file_id, &ast_collect::get_ast_fn_key(&source.value)) {
-                if visit.is_visited() {
-                    *avi = ast_collect::AstVisitInfo::Visited;
-                } else if *avi == ast_collect::AstVisitInfo::None { // Do not make it unused if it is already visited in HIR-level.
-                    *avi = ast_collect::AstVisitInfo::Unused; // It is recognized in HIR-level and unused.
-                }
-            }
+        if let Some(source) = sema.source(*f)
+            && let Some((_, avi)) = ast_collect.get_function_info(retrive_file_id(db, &source.file_id), &ast_collect::get_ast_fn_key(&source.value)) {
+            set_visited(avi, visit);
+        }
+    }
+    for (adt, visit) in hircollect.adts.iter() {
+        if let Some(source) = sema.source(*adt)
+            && let Some((_, avi)) = ast_collect.get_adt_info(retrive_file_id(db, &source.file_id), &ast_collect::get_ast_adt_key(&source.value)) {
+            set_visited(avi, visit);
+        }
+    }
+    for (tr, visit) in hircollect.traits.iter() {
+        if let Some(source) = sema.source(*tr)
+            && let Some((_, avi)) = ast_collect.get_trait_info(retrive_file_id(db, &source.file_id), &ast_collect::get_ast_trait_key(&source.value)) {
+            set_visited(avi, visit);
+        }
+    }
+    for (impl_, visit) in hircollect.impls.iter() {
+        if let Some(source) = sema.source(*impl_)
+            && let Some((_, avi)) = ast_collect.get_impl_info(retrive_file_id(db, &source.file_id), &ast_collect::get_ast_impl_key(&source.value)) {
+            set_visited(avi, visit);
         }
     }
 }
@@ -216,6 +238,12 @@ enum UnusedItemKind {
     Function,
     /// It is a use statement. 'use'
     Use,
+    /// It is a struct, enum, or union. 'struct', 'enum', 'union'
+    Adt,
+    /// It is a trait. 'trait'
+    Trait,
+    /// It is an impl block. 'impl'
+    Impl
 }
 
 /// Represents Unused Items
@@ -297,7 +325,7 @@ impl UnusedAnalysisResult {
         for UnusedItem { text_range: r, kind: k, .. } in unused_items {
             result.push_str(&src_text[itr..r.start().into()]);
             match k {
-                UnusedItemKind::Function => {
+                UnusedItemKind::Function | UnusedItemKind::Adt | UnusedItemKind::Trait | UnusedItemKind::Impl => {
                     result.push_str(&cfg_str);
                     result.push_str(&src_text[*r]);
                 }

@@ -1,0 +1,17 @@
+[package]
+name = "unused_test"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+is-lp-core = []
+has-lp-core = []
+
+[package.metadata.mtukai]
+unused_elimination = true
+
+[[package.metadata.mtukai.build]]
+name = "default"
+chip = "posix"
+
+[dependencies]
