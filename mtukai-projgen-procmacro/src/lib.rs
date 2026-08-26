@@ -13,6 +13,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
+use syn::parse_quote;
 
 #[proc_macro_attribute]
 pub fn mtukai_projgen_undead(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -407,7 +408,7 @@ fn build_call_args(
     Ok(arg_exprs)
 }
 
-fn generate_parcel_struct(flat_fields : &Vec<FlatField>, implement_impls : bool) -> syn::Result<proc_macro2::TokenStream> {
+fn generate_parcel_struct(flat_fields : &Vec<FlatField>, implement_impls : bool, return_type: &Option<syn::Type>) -> syn::Result<proc_macro2::TokenStream> {
     use syn::Type;
     fn push_move_stmts(
         field_name: &syn::Ident,
@@ -453,6 +454,13 @@ fn generate_parcel_struct(flat_fields : &Vec<FlatField>, implement_impls : bool)
             push_move_stmts( &name, &ty, &mut move_to_main_stmts, &mut move_to_lp_stmts)?;
         }
     }
+    if let Some(ret_ty) = return_type {
+        let ret_ty = parse_quote!{Option<#ret_ty>};
+        fields.extend(quote! { ret_val: #ret_ty });
+        if implement_impls {
+            push_move_stmts(&syn::Ident::new("ret_val", proc_macro2::Span::call_site()), &ret_ty, &mut move_to_main_stmts, &mut move_to_lp_stmts)?;
+        }
+    }
 
     Ok(quote! {
         use core::ptr::NonNull;
@@ -487,9 +495,10 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         FnArg,
         GenericArgument,
         ItemFn,
+        parse::Error,
         PatType,
         PathArguments,
-        Type,
+        Type
     };
 
     let entry_args: EntryMacroArgs = match syn::parse(args) {
@@ -567,7 +576,17 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         Ok(fields) => fields,
         Err(e) => return e.to_compile_error().into(),
     };
-    let parcel_struct = match generate_parcel_struct(&flat_fields, false) {
+
+    let return_type = match input.sig.output {
+        syn::ReturnType::Type(_, ref ty) if matches!(&**ty, syn::Type::Never(_)) =>
+            return Error::new(Span2::call_site(), "functions returning `!` are not supported by #[entry]")
+                .to_compile_error().into(),
+        syn::ReturnType::Type(_, ref ty) =>
+            Some(*ty.clone()),
+        _ => None
+    };
+
+    let parcel_struct = match generate_parcel_struct(&flat_fields, false, &return_type) {
         Ok(ts) => ts,
         Err(e) => return e.to_compile_error().into(),
     };
@@ -588,6 +607,11 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let orig_name = input.sig.ident.clone();
+    let func_call = if return_type.is_some() {
+        quote!{mtukai_transferred.ret_val = Some(#orig_name(&mut #self_crate::LpContext::new(), #(#arg_exprs),*))}
+    } else {
+        quote!{#orig_name(&mut #self_crate::LpContext::new(), #(#arg_exprs),*)}
+    };
     let magic_symbol_name = make_magic_symbol_name(&args);
     quote! {
         #procmacro_crate::esp_rs_copro_statics!(#heap_size);
@@ -601,8 +625,10 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             unsafe { ULP_MAGIC.as_ptr().read_volatile(); }
             #parcel_struct
             let mtukai_transferred = get_transfer::<MtukaiParcel>().unwrap();
-            #orig_name(&mut #self_crate::LpContext::new(), #(#arg_exprs),*);
+            #func_call;
             #[allow(unreachable_code)] core::mem::forget(mtukai_transferred); // Do not free the transferred data, as it is now owned by the main processor.
+            #mtukai_crate::prelude::wake_hp_core();
+            #mtukai_crate::prelude::lp_core_halt();
         }
         #input
     }.into()
@@ -761,7 +787,18 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let mut new_sig = input_fn.sig.clone();
-    new_sig.output = parse_quote!(-> Result<(), #mtukai_crate::EspCoproError>);
+    let return_type = match input_fn.sig.output {
+        syn::ReturnType::Type(_, ref ty) if matches!(&**ty, syn::Type::Never(_)) =>
+            return Error::new(Span::call_site().into(), "functions returning `!` are not supported by #[entry]")
+                .to_compile_error().into(),
+        syn::ReturnType::Type(_, ref ty) => Some(ty.as_ref().clone()),
+        _ => None
+    };
+    new_sig.output = if let Some(ret_ty) = &return_type {
+        parse_quote!(-> Result<#ret_ty, #mtukai_crate::EspCoproError>)
+    } else {
+        parse_quote!(-> Result<(), #mtukai_crate::EspCoproError>)
+    };
     let first_arg = match new_sig.inputs.first_mut() {
         Some(arg) => match rewrite_binding(
             arg,
@@ -782,7 +819,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         Ok(fields) => fields,
         Err(e) => return e.to_compile_error().into(),
     };
-    let parcel_struct = match generate_parcel_struct(&flat_fields, true) {
+    let parcel_struct = match generate_parcel_struct(&flat_fields, true, &return_type) {
         Ok(ts) => ts,
         Err(e) => return e.to_compile_error().into(),
     };
@@ -807,6 +844,9 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 }
             }
+            if return_type.is_some() {
+                new_args.extend(quote! { ret_val: None, });
+            }
             (quote!{
                 unsafe {
                     use core::alloc::GlobalAlloc;
@@ -829,7 +869,6 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             },
             quote!{unsafe {
                 mtukai_transfer_value.wrap_transfer_to_main(((#a) as *mut NonNull<MtukaiParcel>).read_volatile())?;
-                core::mem::forget(mtukai_transfer_value);
             } })
         } else { (quote! {}, quote! {})};
     let allocsym = obj_file.symbols().find(|s| s.name().map_or(false, |v| v.starts_with("__COPRO_ALLOCATOR_")));
@@ -856,6 +895,17 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         quote! { &#rtc_code_start as *const u32 as *mut u8 }
     };
 
+    let last_return = if let Some(ret_ty) = return_type {
+        quote! {
+            match mtukai_transfer_value.ret_val {
+                Some(ret) => Ok(ret),
+                None => Err(#mtukai_crate::EspCoproError::NoReturn),
+            }
+        }
+    } else {
+        quote! {Ok(())}
+    };
+
     quote! {
         #new_sig {
             #imports
@@ -873,7 +923,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             #first_arg.get_rtc().sleep_light(&[&WakeFromLpCoreWakeupSource::new()]);
             #transfer_back
             copro_unlock();
-            Ok(())
+            #last_return
         }
     }.into()
 }
