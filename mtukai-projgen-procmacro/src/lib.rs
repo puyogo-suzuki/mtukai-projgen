@@ -229,6 +229,18 @@ fn collect_flat_fields(inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::tok
         fn gen_wildcard_error (pat: &syn::Pat) -> syn::Result<()> {
             Err(syn::Error::new_spanned( pat, "wildcard is unsupported." ))
         }
+        fn tuple_collect(pat: &Pat, pat_tuple: &syn::PatTuple, tuple_ty: &syn::TypeTuple, fields: &mut Vec<FlatField>) -> syn::Result<()>{
+            if pat_tuple.elems.len() != tuple_ty.elems.len() {
+                return Err(syn::Error::new_spanned(
+                    pat,
+                    "tuple pattern and tuple type have different lengths",
+                ));
+            }
+            for (sub_pat, sub_ty) in pat_tuple.elems.iter().zip(tuple_ty.elems.iter()) {
+                collect_flat_fields(sub_pat, sub_ty, fields)?;
+            }
+            Ok(())
+        }
         match (pat, ty) {
             // (Pat::Slice(pat_slice), Type::Array(array_ty)) => { } // Not supported because it is not popular.
             (Pat::Ident(pat_ident), ty) => {
@@ -248,36 +260,14 @@ fn collect_flat_fields(inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::tok
             (Pat::Reference(pat_ref), ty) => collect_flat_fields(pat_ref.pat.as_ref(), ty, fields),
             (Pat::Tuple(pat_tuple), Type::Reference(inner_ref)) => {
                 match inner_ref.elem.as_ref() {
-                    Type::Tuple(inner_tuple) => {
-                        if pat_tuple.elems.len() != inner_tuple.elems.len() {
-                            return Err(syn::Error::new_spanned(
-                                pat,
-                                "tuple pattern and tuple type have different lengths",
-                            ));
-                        }
-                        for (sub_pat, sub_ty) in pat_tuple.elems.iter().zip(inner_tuple.elems.iter()) {
-                            collect_flat_fields(sub_pat, sub_ty, fields)?;
-                        }
-                        Ok(())
-                    }
+                    Type::Tuple(inner_tuple) => tuple_collect(pat, pat_tuple, inner_tuple, fields),
                     _ => Err(syn::Error::new_spanned(
                         pat,
                         "tuple pattern requires a tuple type",
                     )),
                 }
             }
-            (Pat::Tuple(pat_tuple), Type::Tuple(tuple_ty)) => {
-                if pat_tuple.elems.len() != tuple_ty.elems.len() {
-                    return Err(syn::Error::new_spanned(
-                        pat,
-                        "tuple pattern and tuple type have different lengths",
-                    ));
-                }
-                for (sub_pat, sub_ty) in pat_tuple.elems.iter().zip(tuple_ty.elems.iter()) {
-                    collect_flat_fields(sub_pat, sub_ty, fields)?;
-                }
-                Ok(())
-            }
+            (Pat::Tuple(pat_tuple), Type::Tuple(tuple_ty)) => tuple_collect(pat, pat_tuple, tuple_ty, fields),
             (Pat::Wild(_), _) | (Pat::Rest(_), _) => gen_wildcard_error(pat),
             (Pat::Or(pat_or), _) => Err(syn::Error::new(
                 pat_or.span(),
@@ -318,6 +308,18 @@ fn build_call_args(
         ty: &Type,
         flat_fields: &mut std::slice::Iter<'_, FlatField>,
     ) -> syn::Result<proc_macro2::TokenStream> {
+        fn build_tuple_expr<'a>(pat: &Pat, ty: &'a Type) -> syn::Result<&'a syn::TypeTuple> {
+            match ty {
+                Type::Reference(inner_ty) => build_tuple_expr(pat, inner_ty.elem.as_ref()),
+                Type::Tuple(tuple_ty) => Ok(tuple_ty),
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        pat,
+                        "tuple pattern requires a tuple type",
+                    ));
+                }
+            }
+        }
         match pat {
             // Pat::Slice(pat_slice) => { } // Not supported because it is not popular.
             Pat::Ident(pat_ident) => {
@@ -350,24 +352,7 @@ fn build_call_args(
             }
             Pat::Tuple(pat_tuple) => {
                 let mut elems = Vec::with_capacity(pat_tuple.elems.len());
-                let tuple_ty = match ty {
-                    Type::Reference(inner_ty) => match inner_ty.elem.as_ref() {
-                        Type::Tuple(tuple_ty) => tuple_ty,
-                        _ => {
-                            return Err(syn::Error::new_spanned(
-                                pat,
-                                "tuple pattern requires a tuple type",
-                            ));
-                        }
-                    },
-                    Type::Tuple(tuple_ty) => tuple_ty,
-                    _ => {
-                        return Err(syn::Error::new_spanned(
-                            pat,
-                            "tuple pattern requires a tuple type",
-                        ));
-                    }
-                };
+                let tuple_ty = build_tuple_expr(pat, ty)?;
                 if pat_tuple.elems.len() != tuple_ty.elems.len() {
                     return Err(syn::Error::new_spanned(
                         pat,
@@ -762,8 +747,8 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
                 syn::Pat::Ident(pat_ident) => {
                     if pat_ident.ident != "_" {
                         return Ok(pat_ident.ident.clone());
-                        } // if "_", rewriting.
-                    },
+                    } // if "_", rewriting.
+                },
                 syn::Pat::Wild(_) => {}, // OK rewriting.
                 _ => { return Err(Error::new(pt.pat.span(), err_msg)); }
             };
