@@ -16,7 +16,7 @@ object            = { version = "0.37", default-features = false, features = ["r
 proc-macro-crate  = "3.4"
 proc-macro2       = "1.0"
 quote             = "1.0"
-syn               = { version = "2.0", features = ["extra-traits", "full"] }
+syn               = { version = "3.0", features = ["extra-traits", "full"] }
 termcolor         = "1.4"
 toml_edit         = "0.25.11"
 
