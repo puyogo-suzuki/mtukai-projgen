@@ -20,3 +20,18 @@ ra_ap_hir = "0.0.340"
 
 [profile.dev]
 opt-level = 1
+
+[profile.dev.package.ra_ap_ide]
+debug-assertions = false
+[profile.dev.package.ra_ap_project_model]
+debug-assertions = false
+[profile.dev.package.ra_ap_load-cargo]
+debug-assertions = false
+[profile.dev.package.ra_ap_vfs]
+debug-assertions = false
+[profile.dev.package.ra_ap_base_db]
+debug-assertions = false
+[profile.dev.package.ra_ap_syntax]
+debug-assertions = false
+[profile.dev.package.ra_ap_hir]
+debug-assertions = false
