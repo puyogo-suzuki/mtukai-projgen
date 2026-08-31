@@ -408,7 +408,7 @@ fn build_call_args(
     Ok(arg_exprs)
 }
 
-fn generate_parcel_struct(flat_fields : &Vec<FlatField>, implement_impls : bool, return_type: &Option<syn::Type>) -> syn::Result<proc_macro2::TokenStream> {
+fn generate_parcel_struct(generics: &syn::Generics, flat_fields : &Vec<FlatField>, implement_impls : bool, return_type: &Option<syn::Type>) -> syn::Result<proc_macro2::TokenStream> {
     use syn::Type;
     fn push_move_stmts(
         field_name: &syn::Ident,
@@ -464,10 +464,10 @@ fn generate_parcel_struct(flat_fields : &Vec<FlatField>, implement_impls : bool,
 
     Ok(quote! {
         use core::ptr::NonNull;
-        struct MtukaiParcel {
+        struct MtukaiParcel #generics {
             #fields
         }
-        impl MovableObject for MtukaiParcel {
+        impl #generics MovableObject for MtukaiParcel #generics {
             unsafe fn move_to_main(&self, dest: *mut u8) -> Result<(), EspCoproError> { unsafe {
                 #move_to_main_stmts
                 Ok(())
@@ -586,7 +586,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         _ => None
     };
 
-    let parcel_struct = match generate_parcel_struct(&flat_fields, false, &return_type) {
+    let parcel_struct = match generate_parcel_struct(&input.sig.generics, &flat_fields, false, &return_type) {
         Ok(ts) => ts,
         Err(e) => return e.to_compile_error().into(),
     };
@@ -819,7 +819,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         Ok(fields) => fields,
         Err(e) => return e.to_compile_error().into(),
     };
-    let parcel_struct = match generate_parcel_struct(&flat_fields, true, &return_type) {
+    let parcel_struct = match generate_parcel_struct(&input_fn.sig.generics, &flat_fields, true, &return_type) {
         Ok(ts) => ts,
         Err(e) => return e.to_compile_error().into(),
     };
