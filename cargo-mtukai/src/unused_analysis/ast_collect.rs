@@ -100,6 +100,9 @@ impl AstCollectFile {
         }
         let mut res = use_elimination::into_vec_unuseditem(&self.unresolved_imports);
         res.append(&mut ranges);
+        if res.is_empty() {
+            return res;
+        }
         res.sort_by(|a, b| {
             let st = a.text_range.start().cmp(&b.text_range.start());
             if st == std::cmp::Ordering::Equal {
