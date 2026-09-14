@@ -11,7 +11,7 @@ features = ["is-lp-core", "has-lp-core", "esp32c6"]
 
 [dependencies]
 esp-lp-hal  = { version = "0.3.0", features = [], optional = true}
-esp-hal     = { version = "=1.1.1", features = ["unstable", "log-04"], optional = true }
+esp-hal     = { version = "=1.2.1", features = ["unstable", "log-04"], optional = true }
 
 [features]
 #! ### Low-power Core Feature Flags

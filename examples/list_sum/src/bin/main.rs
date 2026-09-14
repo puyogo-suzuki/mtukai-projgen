@@ -11,7 +11,7 @@
 #[cfg(feature = "has-lp-core")]
 use {
     esp_alloc as _,
-    esp_hal::rtc_cntl::Rtc,
+    esp_hal::rtc_cntl::sleep::LowPower,
     esp_rs_copro_procmacro::{define_lp_allocator},
     esp_println::{print, println}
 };
@@ -131,8 +131,8 @@ fn main() -> ! {
         println!("lpcore run");
         delay.delay_millis(1000); // FOR ESP32-S3 because the UART stuck after the HP core wake up without the delay.
         {
-            let mut rtc = Rtc::new(peripherals.LPWR);
-            let mut lp_context = LpContext::new(&mut lp_core, &mut rtc);
+            let mut lwpr = LowPower::new(peripherals.LPWR);
+            let mut lp_context = LpContext::new(&mut lp_core, &mut lwpr);
             match lpmain(&mut lp_context, &mut data, TO_ADD, &to_be_summed) {
                 Ok(res) => result = res,
                 Err(e) => println!("Error running LP core: {}", e)

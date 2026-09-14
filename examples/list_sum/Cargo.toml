@@ -27,13 +27,13 @@ name = "esp32s3"
 chip = "esp32s3"
 
 [dependencies]
-esp-println = { version="0.17.0", features = ["log-04"], optional = true}
-esp-backtrace = { version="0.19.0", features = [
+esp-println = { version="0.18.0", features = ["log-04"], optional = true}
+esp-backtrace = { version="0.20.0", features = [
     "panic-handler",
     "println",
 ], optional = true }
-esp-bootloader-esp-idf = { version = "0.5.0", optional = true }
-esp-hal                = { version = "=1.1.1", features = ["unstable", "log-04"], optional = true }
+esp-bootloader-esp-idf = { version = "0.6.0", optional = true }
+esp-hal                = { version = "=1.2.1", features = ["unstable", "log-04"], optional = true }
 
 esp-rs-copro           = { path = "../../mtukai/esp-rs-copro" }
 mtukai-projgen = { path = "../../mtukai-projgen" }
@@ -46,7 +46,7 @@ cfg-if = "1.0.3"
 panic-halt = { version = "0.2.0", optional = true }
 
 critical-section = {version ="1.2.0", optional = true }
-esp-alloc = { version = "0.10.0", optional = true }
+esp-alloc = { version = "0.11.0", optional = true }
 
 [features]
 esp32c6 = [ "esp-backtrace?/esp32c6", "esp-bootloader-esp-idf?/esp32c6", "esp-hal?/esp32c6", "esp-lp-hal?/esp32c6", "esp-rs-copro/esp32c6", "esp-alloc?/esp32c6", "esp-rs-copro-procmacro/esp32c6", "mtukai-projgen/esp32c6", "mtukai-projgen-procmacro/esp32c6" ]

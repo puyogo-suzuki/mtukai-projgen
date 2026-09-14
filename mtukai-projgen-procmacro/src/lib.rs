@@ -733,19 +733,16 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // magic symbol is not cared, currently.
-
     #[cfg(feature = "esp32c6")]
     let imports = quote! {
-        use #hal_crate::lp_core::LpCore;
-        use #hal_crate::lp_core::LpCoreWakeupSource;
-        use #hal_crate::rtc_cntl::sleep::WakeFromLpCoreWakeupSource;
+        use #hal_crate::lp_core::{LpCore, LpCoreWakeupSource};
+        use #hal_crate::rtc_cntl::sleep::{LowPower, RtcSleepConfig};
         #copro_crate_use;
     };
     #[cfg(feature = "esp32s3")]
     let imports = quote! {
         use #hal_crate::ulp_core::UlpCore as LpCore;
-        use #hal_crate::ulp_core::UlpCoreWakeupSource as LpCoreWakeupSource;
-        use #hal_crate::rtc_cntl::sleep::UlpWakeupSource as WakeFromLpCoreWakeupSource;
+        use #hal_crate::rtc_cntl::sleep::{LowPower, RtcSleepConfig};
         #copro_crate_use;
     };
 
@@ -906,6 +903,12 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         quote! {Ok(())}
     };
 
+    let enable_wakeup = if cfg!(feature = "esp32c6") {
+        quote! { core.enable_wakeup(); }
+    } else {
+        quote! { core.enable_wakeup(WakeupConfig::default()); }
+    };
+
     quote! {
         #new_sig {
             #imports
@@ -919,8 +922,12 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             #allocfun
             try_copro_lock()?;
             #alloccall
-            #first_arg.get_core().run(LpCoreWakeupSource::HpCpu);
-            #first_arg.get_rtc().sleep_light(&[&WakeFromLpCoreWakeupSource::new()]);
+            {
+                let core = #first_arg.get_core();
+                #enable_wakeup
+                #first_arg.get_core().run(LpCoreWakeupSource::HpCpu);
+            }
+            #first_arg.get_lpwr().sleep_light(RtcSleepConfig::default());
             #transfer_back
             copro_unlock();
             #last_return
